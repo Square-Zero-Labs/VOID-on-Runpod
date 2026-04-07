@@ -33,6 +33,8 @@ COPY . /opt/void_template
 RUN chmod +x /opt/void_template/start-void.sh /opt/void_template/restart-void.sh && \
     ln -sf /opt/void_template/restart-void.sh /usr/local/bin/restart-void
 
+WORKDIR /workspace
+
 EXPOSE 7862 8888
 
 CMD ["/opt/void_template/start-void.sh"]

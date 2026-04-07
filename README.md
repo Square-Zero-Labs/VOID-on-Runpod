@@ -7,9 +7,11 @@ The app supports:
 - browser-based point selection across arbitrary frames
 - Gemini-backed quadmask generation
 - staged Pass 1 and Pass 2 execution
+- reopening an existing saved job by name without reuploading the source video
+- uploading an existing Pass 1 result and continuing directly to Pass 2
 - first-boot download of the required models and SAM2 checkpoint
 - lazy download of the Pass 2 checkpoint only when Pass 2 is requested
-- nginx basic auth in front of Gradio, matching the `SparkVSR-on-Runpod` deployment pattern
+- nginx basic auth in front of Gradio
 
 ## Build
 
@@ -60,12 +62,19 @@ The default basic-auth credentials are:
 
 The Gradio app then guides the user through:
 
-1. Uploading a video.
+1. Uploading a video and optionally assigning a reusable job name.
 2. Clicking points on any frame to build the original points JSON.
 3. Entering the Gemini API key and clean-background prompt.
 4. Creating and previewing `quadmask_0.mp4`.
 5. Running Pass 1.
 6. Running Pass 2.
+
+If you assign a job name, the UI shows the exact saved value as `Active job`. You can paste that later into `Existing job name` to reopen the same job workspace without reuploading.
+
+If you already have intermediate assets, you can also:
+
+- upload an existing `quadmask_0.mp4`
+- upload an existing Pass 1 output video and continue directly to Pass 2
 
 The interactive point-selection stage uses the upstream SAM2 flow from the `VOID` subtree. The grey-mask stage remains the upstream text-conditioned helper path behind the scenes, but that is not exposed in the web UI.
 

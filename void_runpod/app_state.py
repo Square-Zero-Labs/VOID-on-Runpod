@@ -21,29 +21,72 @@ def ensure_dir(path: Path) -> Path:
     return path
 
 
-def make_job_paths(workspace_dir: Path, upload_name: str, requested_name: str | None = None) -> dict[str, str]:
-    upload_stem = Path(upload_name).stem
-    base_name = slugify(requested_name or upload_stem, default="void-job")
-    job_id = f"{base_name}-{uuid.uuid4().hex[:8]}"
-    job_dir = ensure_dir(workspace_dir / "jobs" / job_id)
+def _job_paths_from_id(workspace_dir: Path, job_id: str, create: bool = True) -> dict[str, str]:
+    job_dir = workspace_dir / "jobs" / job_id
+    if create:
+        ensure_dir(job_dir)
     sequence_name = "sequence"
-    data_root = ensure_dir(job_dir / "data")
-    sequence_dir = ensure_dir(data_root / sequence_name)
+    data_root = job_dir / "data"
+    sequence_dir = data_root / sequence_name
+
+    if create:
+        ensure_dir(data_root)
+        ensure_dir(sequence_dir)
 
     return {
         "job_id": job_id,
         "job_dir": str(job_dir),
-        "data_root": str(data_root),
+        "data_root": str(data_root if not create else ensure_dir(data_root)),
         "sequence_name": sequence_name,
-        "sequence_dir": str(sequence_dir),
-        "frames_dir": str(ensure_dir(job_dir / "frames")),
-        "logs_dir": str(ensure_dir(job_dir / "logs")),
-        "pass1_dir": str(ensure_dir(job_dir / "pass1_outputs")),
-        "pass2_dir": str(ensure_dir(job_dir / "pass2_outputs")),
+        "sequence_dir": str(sequence_dir if not create else ensure_dir(sequence_dir)),
+        "frames_dir": str(job_dir / "frames" if not create else ensure_dir(job_dir / "frames")),
+        "logs_dir": str(job_dir / "logs" if not create else ensure_dir(job_dir / "logs")),
+        "pass1_dir": str(job_dir / "pass1_outputs" if not create else ensure_dir(job_dir / "pass1_outputs")),
+        "pass2_dir": str(job_dir / "pass2_outputs" if not create else ensure_dir(job_dir / "pass2_outputs")),
         "input_video_path": str(sequence_dir / "input_video.mp4"),
         "prompt_path": str(sequence_dir / "prompt.json"),
         "config_path": str(job_dir / "config_points.json"),
     }
+
+
+def make_job_paths(workspace_dir: Path, upload_name: str, requested_name: str | None = None) -> dict[str, str]:
+    upload_stem = Path(upload_name).stem
+
+    if requested_name and requested_name.strip():
+        job_id = slugify(requested_name, default="void-job")
+        existing_job_dir = workspace_dir / "jobs" / job_id
+        if existing_job_dir.exists():
+            raise FileExistsError(
+                f"Job `{job_id}` already exists. Use Open Existing Job instead of uploading again."
+            )
+        return _job_paths_from_id(workspace_dir, job_id, create=True)
+
+    base_name = slugify(upload_stem, default="void-job")
+    job_id = f"{base_name}-{uuid.uuid4().hex[:8]}"
+    return _job_paths_from_id(workspace_dir, job_id, create=True)
+
+
+def _video_metadata(video_path: str) -> dict[str, Any]:
+    capture = cv2.VideoCapture(video_path)
+    if not capture.isOpened():
+        raise RuntimeError(f"Failed to open video: {video_path}")
+
+    fps = capture.get(cv2.CAP_PROP_FPS) or 12.0
+    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    capture.release()
+
+    return {
+        "fps": float(fps),
+        "width": width,
+        "height": height,
+        "total_frames": total_frames,
+    }
+
+
+def _frame_paths(frames_dir: str) -> list[str]:
+    return [str(path) for path in sorted(Path(frames_dir).glob("frame_*.jpg"))]
 
 
 def copy_uploaded_video(upload_path: str, destination_path: str) -> None:
@@ -86,6 +129,68 @@ def extract_frames(video_path: str, frames_dir: str) -> dict[str, Any]:
         "height": height,
         "total_frames": len(frame_paths) if total_frames <= 0 else total_frames,
     }
+
+
+def load_existing_job(workspace_dir: Path, requested_name: str) -> dict[str, Any]:
+    if not requested_name or not requested_name.strip():
+        raise FileNotFoundError("Enter a job name to reopen an existing job.")
+
+    requested = requested_name.strip()
+    candidates = [requested]
+    slugified = slugify(requested, default="void-job")
+    if slugified not in candidates:
+        candidates.append(slugified)
+
+    job_dir: Path | None = None
+    for candidate in candidates:
+        probe = workspace_dir / "jobs" / candidate
+        if probe.exists():
+            job_dir = probe
+            break
+
+    if job_dir is None:
+        raise FileNotFoundError(f"No saved job found for `{requested}`.")
+
+    job_state = _job_paths_from_id(workspace_dir, job_dir.name, create=False)
+    input_video_path = Path(job_state["input_video_path"])
+    if not input_video_path.exists():
+        raise FileNotFoundError(f"Saved job `{job_dir.name}` is missing its source video.")
+
+    frame_paths = _frame_paths(job_state["frames_dir"])
+    if frame_paths:
+        metadata = _video_metadata(job_state["input_video_path"])
+        metadata["frame_paths"] = frame_paths
+        if metadata["total_frames"] <= 0:
+            metadata["total_frames"] = len(frame_paths)
+    else:
+        metadata = extract_frames(job_state["input_video_path"], job_state["frames_dir"])
+
+    config_path = Path(job_state["config_path"])
+    points_by_frame: dict[str, list[list[int]]] = {}
+    removal_instruction = "remove the selected object"
+    min_grid = 8
+    multi_frame_grids = True
+    if config_path.exists():
+        config_payload = json.load(open(config_path, "r", encoding="utf-8"))
+        video_payload = (config_payload.get("videos") or [{}])[0]
+        points_by_frame = video_payload.get("primary_points_by_frame", {}) or {}
+        removal_instruction = video_payload.get("instruction") or removal_instruction
+        min_grid = int(video_payload.get("min_grid", min_grid))
+        multi_frame_grids = bool(video_payload.get("multi_frame_grids", multi_frame_grids))
+
+    background_prompt = ""
+    prompt_path = Path(job_state["prompt_path"])
+    if prompt_path.exists():
+        prompt_payload = json.load(open(prompt_path, "r", encoding="utf-8"))
+        background_prompt = prompt_payload.get("bg", "") or ""
+
+    job_state.update(metadata)
+    job_state["points_by_frame"] = points_by_frame
+    job_state["removal_instruction"] = removal_instruction
+    job_state["background_prompt"] = background_prompt
+    job_state["min_grid"] = min_grid
+    job_state["multi_frame_grids"] = multi_frame_grids
+    return job_state
 
 
 def overlay_points(frame_path: str, points_by_frame: dict[str, list[list[int]]], frame_index: int) -> np.ndarray:
