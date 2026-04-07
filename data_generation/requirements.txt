@@ -1,0 +1,12 @@
+numpy
+Pillow
+tqdm
+pyyaml
+streamlit
+opencv-python-headless
+
+# Kubric pipeline only (kubric_variable_objects.py)
+kubric
+pybullet
+imageio
+imageio-ffmpeg
