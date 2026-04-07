@@ -25,11 +25,13 @@ docker build --platform=linux/amd64 -t void-runpod:latest .
 docker run --gpus all -p 7862:7862 \
   -e VOID_USERNAME=admin \
   -e VOID_PASSWORD=void \
-  -e HF_TOKEN=your_hf_token \
+  -e HF_TOKEN=your_hf_read_token \
   void-runpod:latest
 ```
 
 The container proxies nginx on port `7862` to Gradio on port `7860`.
+
+If you plan to use upstream `sam3` for quadmask generation, `HF_TOKEN` should be a Hugging Face token with read access from an account that has already been approved for the gated `facebook/sam3` repo.
 
 ## Runpod Deploy Notes
 
@@ -39,7 +41,7 @@ Optional environment variables:
 
 - `VOID_USERNAME` basic-auth username, default `admin`
 - `VOID_PASSWORD` basic-auth password, default `void`
-- `HF_TOKEN` optional Hugging Face token for model downloads
+- `HF_TOKEN` Hugging Face token with read access. If you want `sam3` quadmask generation, the token must belong to an account that already has access to the gated `facebook/sam3` repo.
 - `VOID_WORKSPACE_DIR` override for where jobs and checkpoints are stored
 
 On first boot the startup script copies the app to `/workspace/VOID-on-Runpod`, downloads:
@@ -51,9 +53,17 @@ On first boot the startup script copies the app to `/workspace/VOID-on-Runpod`, 
 It also installs the git-based runtime Python packages needed by the upstream subtree:
 
 - `facebookresearch/segment-anything-2`
+- `facebookresearch/sam3`
 - `luca-medeiros/lang-segment-anything`
 
 The Pass 2 checkpoint `void_pass2.safetensors` is downloaded lazily the first time a user runs Pass 2.
+
+Important Hugging Face note:
+
+- The base CogVideoX model and VOID checkpoints are fetched from Hugging Face with `HF_TOKEN` when provided.
+- The official `sam3` Python package is installed from GitHub, but the official SAM3 weights are gated on Hugging Face.
+- If you want the app to use `sam3` during quadmask generation, the Hugging Face account behind `HF_TOKEN` must already have been granted access to `facebook/sam3`.
+- Without that approval, Pass 1 and Pass 2 can still run from an existing `quadmask_0.mp4`, but new `sam3`-backed quadmask generation will not work.
 
 The default basic-auth credentials are:
 

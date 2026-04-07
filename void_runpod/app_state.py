@@ -288,8 +288,16 @@ def artifact_path(job_state: dict[str, Any], name: str) -> str:
 def find_pass1_output(job_state: dict[str, Any]) -> str | None:
     pass1_dir = Path(job_state["pass1_dir"])
     sequence_name = job_state["sequence_name"]
-    candidates = sorted(pass1_dir.glob(f"{sequence_name}-fg=-1-*.mp4"))
-    for candidate in candidates:
-        if "_tuple" not in candidate.name:
-            return str(candidate)
-    return None
+    candidates = [candidate for candidate in pass1_dir.glob(f"{sequence_name}-fg=-1-*.mp4") if "_tuple" not in candidate.name]
+    if not candidates:
+        return None
+
+    def candidate_sort_key(path: Path) -> tuple[int, int, str]:
+        stem_suffix = path.stem.removeprefix(f"{sequence_name}-fg=-1-")
+        if stem_suffix == "imported":
+            return (2, 0, path.name)
+        if stem_suffix.isdigit():
+            return (1, int(stem_suffix), path.name)
+        return (0, 0, path.name)
+
+    return str(max(candidates, key=candidate_sort_key))

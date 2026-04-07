@@ -303,8 +303,18 @@ def temporal_padding(video, min_length=85, max_length=197, dim=2):
         raise NotImplementedError
     logger.debug(f'making video length: {target_length}, padding length: {target_length - length}')
     while video.size(dim) < target_length:
-        video_flipped = torch.flip(video, [dim])
-        video = torch.cat([video, video_flipped], dim=dim)
+        pad_length = target_length - video.size(dim)
+        if dim == 0:
+            pad_value = video[-1:].repeat(pad_length, 1, 1, 1)
+        elif dim == 1:
+            pad_value = video[:, -1:].repeat(1, pad_length, 1, 1)
+        elif dim == 2:
+            pad_value = video[:, :, -1:].repeat(1, 1, pad_length, 1, 1)
+        elif dim == 3:
+            pad_value = video[:, :, :, -1:].repeat(1, 1, 1, pad_length, 1)
+        else:
+            raise NotImplementedError
+        video = torch.cat([video, pad_value], dim=dim)
         if dim == 0:
             video = video[:target_length]
         elif dim == 1:
@@ -592,4 +602,3 @@ def apply_colormap(video):
         video_colored.append(frame)
     video_colored = np.stack(video_colored)
     return video_colored
-

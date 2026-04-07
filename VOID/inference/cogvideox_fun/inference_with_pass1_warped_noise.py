@@ -245,6 +245,8 @@ def main():
                        help="Video height")
     parser.add_argument("--width", type=int, default=672,
                        help="Video width")
+    parser.add_argument("--fps", type=int, default=12,
+                       help="Output video FPS")
 
     # Generation settings
     parser.add_argument("--seed", type=int, default=42,
@@ -435,7 +437,7 @@ def main():
             video_np = (video_np * 255).astype(np.uint8)
 
             output_path = Path(args.output_dir) / f"{video_name}_warped_noise_inference.mp4"
-            imageio.mimsave(output_path, video_np, fps=12, codec='libx264',
+            imageio.mimsave(output_path, video_np, fps=args.fps, codec='libx264',
                            quality=8, pixelformat='yuv420p')
 
             logger.info(f"  ✓ Success: {output_path}")

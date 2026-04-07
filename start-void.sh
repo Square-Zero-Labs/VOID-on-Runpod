@@ -22,6 +22,7 @@ export VOID_BASE_MODEL_PATH="${VOID_BASE_MODEL_PATH:-$CHECKPOINT_DIR/CogVideoX-F
 export VOID_PASS1_PATH="${VOID_PASS1_PATH:-$CHECKPOINT_DIR/void_pass1.safetensors}"
 export VOID_PASS2_PATH="${VOID_PASS2_PATH:-$CHECKPOINT_DIR/void_pass2.safetensors}"
 export VOID_SAM2_CHECKPOINT="${VOID_SAM2_CHECKPOINT:-$CHECKPOINT_DIR/sam2_hiera_large.pt}"
+export VOID_SAM3_HF_REPO="${VOID_SAM3_HF_REPO:-facebook/sam3}"
 
 if [ ! -f "${TARGET_DIR}/app.py" ]; then
     log "Restoring application files to ${TARGET_DIR}"
@@ -37,18 +38,73 @@ mkdir -p \
     "${LOG_DIR}" \
     "${HF_HOME}"
 
-install_runtime_python_packages() {
-    local marker_path="${TARGET_DIR}/.runtime-python-deps-installed"
+python_module_available() {
+    local module_name="$1"
 
-    if [ -f "${marker_path}" ]; then
-        log "Runtime git-installed Python packages already present"
+    MODULE_NAME="${module_name}" python3 - <<'PY'
+import importlib.util
+import os
+import sys
+
+sys.exit(0 if importlib.util.find_spec(os.environ["MODULE_NAME"]) is not None else 1)
+PY
+}
+
+has_hf_auth() {
+    [ -n "${HF_TOKEN:-}" ] || [ -f "${HF_HOME}/token" ] || [ -f "${HOME:-/root}/.cache/huggingface/token" ]
+}
+
+install_runtime_python_packages() {
+    if python_module_available sam2; then
+        log "segment-anything-2 already importable"
+    else
+        log "Installing runtime git-based Python package: segment-anything-2"
+        python3 -m pip install --no-cache-dir --no-build-isolation git+https://github.com/facebookresearch/segment-anything-2.git
+    fi
+
+    if python_module_available lang_sam; then
+        log "lang-segment-anything already importable"
+    else
+        log "Installing runtime git-based Python package: lang-segment-anything"
+        python3 -m pip install --no-cache-dir git+https://github.com/luca-medeiros/lang-segment-anything.git
+    fi
+
+    if python_module_available sam3; then
+        log "sam3 already importable"
+    else
+        log "Installing runtime git-based Python package: sam3"
+        python3 -m pip install --no-cache-dir git+https://github.com/facebookresearch/sam3.git
+    fi
+}
+
+warm_sam3_hf_cache() {
+    if ! python_module_available sam3; then
         return 0
     fi
 
-    log "Installing runtime git-based Python packages"
-    python3 -m pip install --no-cache-dir --no-build-isolation git+https://github.com/facebookresearch/segment-anything-2.git
-    python3 -m pip install --no-cache-dir git+https://github.com/luca-medeiros/lang-segment-anything.git
-    touch "${marker_path}"
+    log "SAM3 package is installed. Official SAM3 weights are gated on Hugging Face (${VOID_SAM3_HF_REPO})."
+    if ! has_hf_auth; then
+        log "No Hugging Face auth detected. SAM3 quadmask generation will require an approved HF_TOKEN or prior 'hf auth login'."
+        return 0
+    fi
+
+    log "Warming SAM3 Hugging Face cache from ${VOID_SAM3_HF_REPO}"
+    python3 - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+repo_id = os.environ["VOID_SAM3_HF_REPO"]
+
+try:
+    snapshot_download(
+        repo_id=repo_id,
+        token=os.environ.get("HF_TOKEN") or None,
+        resume_download=True,
+    )
+    print(f"[VOID] SAM3 cache ready for {repo_id}")
+except Exception as exc:
+    print(f"[VOID] Warning: could not warm SAM3 cache from {repo_id}: {exc}")
+PY
 }
 
 download_snapshot() {
@@ -154,6 +210,7 @@ export DOWNLOAD_OUTPUT_PATH="${VOID_SAM2_CHECKPOINT}"
 download_url "${DOWNLOAD_URL}" "${DOWNLOAD_OUTPUT_PATH}" "SAM2 checkpoint"
 
 install_runtime_python_packages
+warm_sam3_hf_cache
 
 USERNAME="${VOID_USERNAME:-admin}"
 PASSWORD="${VOID_PASSWORD:-void}"

@@ -201,7 +201,7 @@ def run_inference(config, pipeline, vae, generator, input_video_name, keep_fg_id
             max_video_length=video_length,
             temporal_window_size=config.video_model.temporal_window_size,
             data_rootdir=config.data.data_rootdir,
-            use_trimask=True,#config.video_model.use_trimask,
+            use_trimask=config.video_model.use_trimask,
             dilate_width=config.data.dilate_width,
         )
 
@@ -219,11 +219,11 @@ def run_inference(config, pipeline, vae, generator, input_video_name, keep_fg_id
             width       = sample_size[1],
             generator   = generator,
             guidance_scale = config.video_model.guidance_scale,
-            num_inference_steps = 30,
+            num_inference_steps = config.video_model.num_inference_steps,
             video       = input_video,
             mask_video  = input_video_mask,
             strength    = config.video_model.denoise_strength,
-            use_trimask = True, #config.video_model.use_trimask,
+            use_trimask = config.video_model.use_trimask,
             zero_out_mask_region = config.video_model.zero_out_mask_region,
             skip_unet = config.experiment.skip_unet,
             use_vae_mask = config.video_model.use_vae_mask,
