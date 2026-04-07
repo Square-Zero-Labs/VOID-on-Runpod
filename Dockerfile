@@ -26,8 +26,6 @@ WORKDIR /opt/void_template
 COPY runtime-requirements.txt /tmp/runtime-requirements.txt
 RUN python3 -m pip install --upgrade pip wheel setuptools && \
     python3 -m pip install --no-cache-dir -r /tmp/runtime-requirements.txt && \
-    python3 -m pip install --no-cache-dir --no-build-isolation git+https://github.com/facebookresearch/segment-anything-2.git && \
-    python3 -m pip install --no-cache-dir git+https://github.com/luca-medeiros/lang-segment-anything.git && \
     rm -rf /root/.cache/pip
 
 COPY . /opt/void_template

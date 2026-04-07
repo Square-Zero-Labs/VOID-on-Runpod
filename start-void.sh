@@ -37,6 +37,20 @@ mkdir -p \
     "${LOG_DIR}" \
     "${HF_HOME}"
 
+install_runtime_python_packages() {
+    local marker_path="${TARGET_DIR}/.runtime-python-deps-installed"
+
+    if [ -f "${marker_path}" ]; then
+        log "Runtime git-installed Python packages already present"
+        return 0
+    fi
+
+    log "Installing runtime git-based Python packages"
+    python3 -m pip install --no-cache-dir --no-build-isolation git+https://github.com/facebookresearch/segment-anything-2.git
+    python3 -m pip install --no-cache-dir git+https://github.com/luca-medeiros/lang-segment-anything.git
+    touch "${marker_path}"
+}
+
 download_snapshot() {
     local repo_id="$1"
     local target_dir="$2"
@@ -138,6 +152,8 @@ download_hf_file "${DOWNLOAD_REPO_ID}" "${DOWNLOAD_FILENAME}" "${DOWNLOAD_LOCAL_
 export DOWNLOAD_URL="https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt"
 export DOWNLOAD_OUTPUT_PATH="${VOID_SAM2_CHECKPOINT}"
 download_url "${DOWNLOAD_URL}" "${DOWNLOAD_OUTPUT_PATH}" "SAM2 checkpoint"
+
+install_runtime_python_packages
 
 USERNAME="${VOID_USERNAME:-admin}"
 PASSWORD="${VOID_PASSWORD:-void}"

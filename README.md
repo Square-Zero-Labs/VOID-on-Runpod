@@ -46,6 +46,11 @@ On first boot the startup script copies the app to `/workspace/VOID-on-Runpod`, 
 - `netflix/void-model` `void_pass1.safetensors`
 - `sam2_hiera_large.pt`
 
+It also installs the git-based runtime Python packages needed by the upstream subtree:
+
+- `facebookresearch/segment-anything-2`
+- `luca-medeiros/lang-segment-anything`
+
 The Pass 2 checkpoint `void_pass2.safetensors` is downloaded lazily the first time a user runs Pass 2.
 
 The default basic-auth credentials are:
