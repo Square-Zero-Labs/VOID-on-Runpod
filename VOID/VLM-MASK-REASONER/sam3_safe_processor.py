@@ -25,7 +25,6 @@ class SafeSam3Processor(Sam3Processor):
     def __init__(self, model, resolution: int = 1008, device: str = "cuda", confidence_threshold: float = 0.5):
         self.debug = os.environ.get("VOID_SAM3_DEBUG", "0").lower() not in {"0", "false", "no"}
         self.force_dtype = torch.float32
-        self.force_float32 = os.environ.get("VOID_SAM3_FORCE_FLOAT32", "1").lower() not in {"0", "false", "no"}
         self.mask_threshold = float(os.environ.get("VOID_SAM3_MASK_THRESHOLD", "0.5"))
         self.top1_fallback_min_score = float(os.environ.get("VOID_SAM3_TOP1_FALLBACK_MIN_SCORE", "0.05"))
         self.device = torch.device(device)
@@ -75,11 +74,7 @@ class SafeSam3Processor(Sam3Processor):
         return self.force_dtype
 
     def _target_dtype(self) -> torch.dtype:
-        if self.force_float32:
-            return self.force_dtype
-        if self.device.type == "cuda":
-            return torch.bfloat16
-        return self._model_dtype()
+        return self.force_dtype
 
     def _execution_context(self, dtype: torch.dtype):
         stack = ExitStack()
