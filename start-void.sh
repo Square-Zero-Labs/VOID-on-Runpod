@@ -11,6 +11,7 @@ SOURCE_DIR=/opt/void_template
 TARGET_DIR=/workspace/VOID-on-Runpod
 LOG_DIR="${TARGET_DIR}/logs"
 CHECKPOINT_DIR="${TARGET_DIR}/checkpoints"
+SAM2_GIT_REF="aa9b8722d0585b661ded4b3dff1bd103540554ae"
 
 export HF_HOME="${HF_HOME:-/workspace/.cache/huggingface}"
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-0}"
@@ -21,7 +22,7 @@ export VOID_WORKSPACE_DIR="${VOID_WORKSPACE_DIR:-$TARGET_DIR}"
 export VOID_BASE_MODEL_PATH="${VOID_BASE_MODEL_PATH:-$CHECKPOINT_DIR/CogVideoX-Fun-V1.5-5b-InP}"
 export VOID_PASS1_PATH="${VOID_PASS1_PATH:-$CHECKPOINT_DIR/void_pass1.safetensors}"
 export VOID_PASS2_PATH="${VOID_PASS2_PATH:-$CHECKPOINT_DIR/void_pass2.safetensors}"
-export VOID_SAM2_CHECKPOINT="${VOID_SAM2_CHECKPOINT:-$CHECKPOINT_DIR/sam2_hiera_large.pt}"
+export VOID_SAM2_CHECKPOINT="${VOID_SAM2_CHECKPOINT:-$CHECKPOINT_DIR/sam2.1_hiera_large.pt}"
 export VOID_SAM3_HF_REPO="${VOID_SAM3_HF_REPO:-facebook/sam3}"
 
 if [ ! -f "${TARGET_DIR}/app.py" ]; then
@@ -58,12 +59,36 @@ has_hf_auth() {
     [ -n "${HF_TOKEN:-}" ] || [ -f "${HF_HOME}/token" ] || [ -f "${HOME:-/root}/.cache/huggingface/token" ]
 }
 
+sam2_supports_sam21() {
+    python3 - <<'PY'
+import importlib
+import pathlib
+import sys
+
+try:
+    sam2 = importlib.import_module("sam2")
+except Exception:
+    sys.exit(1)
+
+sam2_root = pathlib.Path(sam2.__file__).resolve().parent
+candidates = [
+    sam2_root / "configs" / "sam2.1" / "sam2.1_hiera_l.yaml",
+    sam2_root.parent / "sam2" / "configs" / "sam2.1" / "sam2.1_hiera_l.yaml",
+]
+sys.exit(0 if any(path.exists() for path in candidates) else 1)
+PY
+}
+
 install_runtime_python_packages() {
-    if python_module_available sam2; then
-        log "segment-anything-2 already importable"
+    if python_module_available sam2 && sam2_supports_sam21; then
+        log "segment-anything-2 already importable with SAM 2.1 support"
+    elif ! python_module_available sam2; then
+        log "Installing runtime git-based Python package: segment-anything-2 @ ${SAM2_GIT_REF}"
+        python3 -m pip install --no-cache-dir --no-build-isolation "git+https://github.com/facebookresearch/segment-anything-2.git@${SAM2_GIT_REF}"
     else
-        log "Installing runtime git-based Python package: segment-anything-2"
-        python3 -m pip install --no-cache-dir --no-build-isolation git+https://github.com/facebookresearch/segment-anything-2.git
+        log "Installed sam2 package does not expose SAM 2.1 configs. This image should ship the pinned SAM 2.1-compatible package already."
+        log "Expected git ref: ${SAM2_GIT_REF}"
+        exit 1
     fi
 
     if python_module_available sam3; then
@@ -202,9 +227,9 @@ export DOWNLOAD_FILENAME="void_pass1.safetensors"
 export DOWNLOAD_LOCAL_DIR="${CHECKPOINT_DIR}"
 download_hf_file "${DOWNLOAD_REPO_ID}" "${DOWNLOAD_FILENAME}" "${DOWNLOAD_LOCAL_DIR}" "VOID Pass 1 checkpoint"
 
-export DOWNLOAD_URL="https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt"
+export DOWNLOAD_URL="https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"
 export DOWNLOAD_OUTPUT_PATH="${VOID_SAM2_CHECKPOINT}"
-download_url "${DOWNLOAD_URL}" "${DOWNLOAD_OUTPUT_PATH}" "SAM2 checkpoint"
+download_url "${DOWNLOAD_URL}" "${DOWNLOAD_OUTPUT_PATH}" "SAM 2.1 checkpoint"
 
 install_runtime_python_packages
 warm_sam3_hf_cache

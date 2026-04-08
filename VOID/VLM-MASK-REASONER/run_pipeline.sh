@@ -7,7 +7,7 @@
 #
 # Example:
 #   bash run_pipeline.sh my_config_points.json
-#   bash run_pipeline.sh my_config_points.json --sam2-checkpoint ../sam2_hiera_large.pt
+#   bash run_pipeline.sh my_config_points.json --sam2-checkpoint ../sam2.1_hiera_large.pt
 
 set -e
 
@@ -18,7 +18,7 @@ if [ -z "$CONFIG" ]; then
     exit 1
 fi
 
-SAM2_CHECKPOINT="../sam2_hiera_large.pt"
+SAM2_CHECKPOINT="../sam2.1_hiera_large.pt"
 DEVICE="cuda"
 
 # Parse optional flags

@@ -9,7 +9,7 @@ The app supports:
 - staged Pass 1 and Pass 2 execution
 - reopening an existing saved job by name without reuploading the source video
 - uploading an existing Pass 1 result and continuing directly to Pass 2
-- first-boot download of the required models and SAM2 checkpoint
+- first-boot download of the required models and SAM 2.1 checkpoint
 - lazy download of the Pass 2 checkpoint only when Pass 2 is requested
 - nginx basic auth in front of Gradio
 
@@ -50,11 +50,11 @@ On first boot the startup script copies the app to `/workspace/VOID-on-Runpod`, 
 
 - `alibaba-pai/CogVideoX-Fun-V1.5-5b-InP`
 - `netflix/void-model` `void_pass1.safetensors`
-- `sam2_hiera_large.pt`
+- `sam2.1_hiera_large.pt`
 
 It also installs the git-based runtime Python packages needed by the upstream subtree:
 
-- `facebookresearch/segment-anything-2`
+- `facebookresearch/segment-anything-2` pinned in code to `aa9b8722d0585b661ded4b3dff1bd103540554ae` for SAM 2.1 compatibility
 - `facebookresearch/sam3`
 
 The Pass 2 checkpoint `void_pass2.safetensors` is downloaded lazily the first time a user runs Pass 2.

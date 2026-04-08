@@ -84,7 +84,7 @@ Stage 1 of the mask pipeline uses Gemini via the Google AI API. Set your API key
 export GEMINI_API_KEY=your_key_here
 ```
 
-Also install [SAM2](https://github.com/facebookresearch/sam2?tab=readme-ov-file#installation) separately (required for mask generation):
+Also install [SAM 2 / SAM 2.1](https://github.com/facebookresearch/sam2?tab=readme-ov-file#installation) separately (required for mask generation):
 
 ```bash
 git clone https://github.com/facebookresearch/sam2.git
@@ -212,7 +212,7 @@ bash VLM-MASK-REASONER/run_pipeline.sh my_config_points.json
 Optional flags:
 ```bash
 bash VLM-MASK-REASONER/run_pipeline.sh my_config_points.json \
-    --sam2-checkpoint path/to/sam2_hiera_large.pt \
+    --sam2-checkpoint path/to/sam2.1_hiera_large.pt \
     --device cuda
 ```
 

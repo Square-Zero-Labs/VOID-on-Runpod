@@ -19,13 +19,14 @@ import os
 import sys
 import json
 import argparse
+from contextlib import nullcontext
 import cv2
 import numpy as np
 import torch
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 import subprocess
 
 # Check SAM2 availability
@@ -35,18 +36,99 @@ try:
 except ImportError:
     SAM2_AVAILABLE = False
     print("⚠️  SAM2 not installed. Install with:")
-    print("   pip install git+https://github.com/facebookresearch/segment-anything-2.git")
+    print("   pip install git+https://github.com/facebookresearch/segment-anything-2.git@aa9b8722d0585b661ded4b3dff1bd103540554ae")
     sys.exit(1)
 
 
 class SAM2PointSegmenter:
     """SAM2 video segmentation with point prompts"""
 
-    def __init__(self, checkpoint_path: str, model_cfg: str = "sam2_hiera_l.yaml", device: str = "cuda"):
+    def __init__(self, checkpoint_path: str, model_cfg: str | None = None, device: str = "cuda"):
         print(f"   Loading SAM2 video predictor...")
         self.device = device
-        self.predictor = build_sam2_video_predictor(model_cfg, checkpoint_path, device=device)
+        self.auto_box = os.environ.get("VOID_SAM2_AUTO_BOX", "0").lower() not in {"0", "false", "no"}
+        self.model_cfg = self._resolve_model_cfg(checkpoint_path, model_cfg)
+        print(f"   SAM2 config: {self.model_cfg}")
+        self.predictor = build_sam2_video_predictor(self.model_cfg, checkpoint_path, device=device)
         print(f"   ✓ SAM2 loaded on {device}")
+
+    @staticmethod
+    def _resolve_model_cfg(checkpoint_path: str, model_cfg: str | None) -> str:
+        if model_cfg:
+            return model_cfg
+
+        checkpoint_name = Path(checkpoint_path).name.lower()
+        if "sam2_hiera_" in checkpoint_name and "sam2.1" not in checkpoint_name:
+            raise ValueError(
+                f"Older SAM2 checkpoint not supported in this environment: {checkpoint_path}. "
+                "Use a SAM 2.1 checkpoint such as sam2.1_hiera_large.pt."
+            )
+
+        if "base_plus" in checkpoint_name or "base+" in checkpoint_name or "b+" in checkpoint_name:
+            return "configs/sam2.1/sam2.1_hiera_b+.yaml"
+        if "small" in checkpoint_name or "_s." in checkpoint_name:
+            return "configs/sam2.1/sam2.1_hiera_s.yaml"
+        if "tiny" in checkpoint_name or "_t." in checkpoint_name:
+            return "configs/sam2.1/sam2.1_hiera_t.yaml"
+        return "configs/sam2.1/sam2.1_hiera_l.yaml"
+
+    def _inference_context(self):
+        if str(self.device).startswith("cuda"):
+            return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        return nullcontext()
+
+    @staticmethod
+    def _normalize_point(point: Any) -> tuple[float, float, int]:
+        if isinstance(point, dict):
+            x = float(point.get("x", 0))
+            y = float(point.get("y", 0))
+            raw_label = point.get("label", point.get("point_type", 1))
+            if isinstance(raw_label, str):
+                label = 0 if raw_label.strip().lower() in {"negative", "neg", "background", "exclude", "0"} else 1
+            else:
+                label = 1 if int(raw_label) > 0 else 0
+            return x, y, label
+
+        if isinstance(point, (list, tuple)):
+            if len(point) >= 3:
+                return float(point[0]), float(point[1]), 1 if int(point[2]) > 0 else 0
+            if len(point) >= 2:
+                return float(point[0]), float(point[1]), 1
+
+        raise ValueError(f"Unsupported point format: {point!r}")
+
+    @classmethod
+    def _build_prompt_inputs(
+        cls,
+        frame_points: List[Any],
+        frame_width: int,
+        frame_height: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        normalized_points = [cls._normalize_point(point) for point in frame_points]
+        points_np = np.array([[x, y] for x, y, _ in normalized_points], dtype=np.float32)
+        labels_np = np.array([label for _, _, label in normalized_points], dtype=np.int32)
+
+        positive_points = points_np[labels_np > 0]
+        box = None
+        if len(positive_points) >= 2:
+            x_coords = positive_points[:, 0]
+            y_coords = positive_points[:, 1]
+            x_min, x_max = x_coords.min(), x_coords.max()
+            y_min, y_max = y_coords.min(), y_coords.max()
+            x_span = float(x_max - x_min)
+            y_span = float(y_max - y_min)
+
+            if x_span >= 4.0 or y_span >= 4.0:
+                x_margin = max(12.0, x_span * 0.15)
+                y_margin = max(12.0, y_span * 0.15)
+                box = np.array([
+                    max(0.0, x_min - x_margin),
+                    max(0.0, y_min - y_margin),
+                    min(float(frame_width), x_max + x_margin),
+                    min(float(frame_height), y_max + y_margin),
+                ], dtype=np.float32)
+
+        return points_np, labels_np, box
 
     def segment_video(self, video_path: str, points: List[List[int]] = None,
                       output_mask_path: str = None, temp_dir: str = None,
@@ -108,63 +190,54 @@ class SAM2PointSegmenter:
 
         # Initialize SAM2
         print(f"   Initializing SAM2...")
-        inference_state = self.predictor.init_state(video_path=temp_dir)
+        with torch.inference_mode(), self._inference_context():
+            inference_state = self.predictor.init_state(video_path=temp_dir)
 
         # Add points for each frame (all with obj_id=1 to merge into single mask)
         for frame_idx in sorted(points_by_frame.keys()):
             frame_points = points_by_frame[frame_idx]
 
-            # Convert points to numpy array
-            points_np = np.array(frame_points, dtype=np.float32)
-            labels_np = np.ones(len(frame_points), dtype=np.int32)  # All positive
+            points_np, labels_np, box = self._build_prompt_inputs(frame_points, frame_width, frame_height)
+            positive_count = int((labels_np > 0).sum())
+            negative_count = int((labels_np == 0).sum())
 
-            # Calculate bounding box from points (with 10% margin for hair/clothes)
-            x_coords = points_np[:, 0]
-            y_coords = points_np[:, 1]
-
-            x_min, x_max = x_coords.min(), x_coords.max()
-            y_min, y_max = y_coords.min(), y_coords.max()
-
-            # Add 10% margin
-            x_margin = (x_max - x_min) * 0.1
-            y_margin = (y_max - y_min) * 0.1
-
-            box = np.array([
-                max(0, x_min - x_margin),
-                max(0, y_min - y_margin),
-                min(frame_width, x_max + x_margin),
-                min(frame_height, y_max + y_margin)
-            ], dtype=np.float32)
-
-            print(f"   Adding {len(frame_points)} points + box to frame {frame_idx}")
+            print(
+                f"   Adding {len(frame_points)} points to frame {frame_idx} "
+                f"({positive_count}+ / {negative_count}-)"
+            )
             print(f"   Points: {frame_points[:3]}..." if len(frame_points) > 3 else f"   Points: {frame_points}")
-            print(f"   Box: [{int(box[0])}, {int(box[1])}, {int(box[2])}, {int(box[3])}]")
+            if self.auto_box and box is not None:
+                print(f"   Auto box: [{int(box[0])}, {int(box[1])}, {int(box[2])}, {int(box[3])}]")
+            else:
+                print("   Auto box: disabled")
 
             # Add points + box to this frame (all use obj_id=1 to merge)
-            _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
-                inference_state=inference_state,
-                frame_idx=frame_idx,
-                obj_id=1,
-                points=points_np,
-                labels=labels_np,
-                box=box,
-            )
+            with torch.inference_mode(), self._inference_context():
+                _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                    inference_state=inference_state,
+                    frame_idx=frame_idx,
+                    obj_id=1,
+                    points=points_np,
+                    labels=labels_np,
+                    box=box if self.auto_box else None,
+                )
 
         print(f"   Propagating through video...")
 
         # Propagate through video
         video_segments = {}
-        for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
-            # Get mask for object ID 1
-            mask_logits = out_mask_logits[out_obj_ids.index(1)]
-            mask = (mask_logits > 0.0).cpu().numpy().squeeze()
-            video_segments[out_frame_idx] = mask
+        with torch.inference_mode(), self._inference_context():
+            for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
+                # Get mask for object ID 1
+                mask_logits = out_mask_logits[out_obj_ids.index(1)]
+                mask = (mask_logits > 0.0).cpu().numpy().squeeze()
+                video_segments[out_frame_idx] = mask
 
         print(f"   ✓ Segmented {len(video_segments)} frames")
 
         # Write mask video
         print(f"   Writing mask video...")
-        self._write_mask_video(video_segments, output_mask_path, fps, frame_width, frame_height)
+        self._write_mask_video(video_segments, output_mask_path, fps, frame_width, frame_height, total_frames)
 
         # Cleanup
         if cleanup:
@@ -190,7 +263,7 @@ class SAM2PointSegmenter:
         return metadata
 
     def _extract_frames(self, video_path: str, output_dir: str) -> List[str]:
-        """Extract video frames as JPG files"""
+        """Extract video frames as high-quality JPEG files for the SAM2 folder loader."""
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         cap = cv2.VideoCapture(video_path)
@@ -202,10 +275,9 @@ class SAM2PointSegmenter:
             if not ret:
                 break
 
-            # SAM2 expects frames named as frame_000000.jpg, frame_000001.jpg, etc.
             frame_filename = f"{frame_idx:06d}.jpg"
             frame_path = os.path.join(output_dir, frame_filename)
-            cv2.imwrite(frame_path, frame)
+            cv2.imwrite(frame_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
             frame_files.append(frame_path)
             frame_idx += 1
 
@@ -218,18 +290,20 @@ class SAM2PointSegmenter:
         return frame_files
 
     def _write_mask_video(self, masks: Dict[int, np.ndarray], output_path: str,
-                          fps: float, width: int, height: int):
+                          fps: float, width: int, height: int, total_frames: int):
         """Write masks to video file"""
         # Write temp AVI first
         temp_avi = Path(output_path).with_suffix('.avi')
         fourcc = cv2.VideoWriter_fourcc(*'FFV1')
         out = cv2.VideoWriter(str(temp_avi), fourcc, fps, (width, height), isColor=False)
 
-        for frame_idx in sorted(masks.keys()):
-            mask = masks[frame_idx]
+        last_mask = np.zeros((height, width), dtype=bool)
+        for frame_idx in range(total_frames):
+            mask = masks.get(frame_idx, last_mask)
             # Convert boolean mask to 0/255
             mask_uint8 = np.where(mask, 0, 255).astype(np.uint8)
             out.write(mask_uint8)
+            last_mask = mask
 
         out.release()
 
@@ -246,7 +320,7 @@ class SAM2PointSegmenter:
         print(f"   ✓ Saved mask video: {output_path}")
 
 
-def process_config(config_path: str, sam2_checkpoint: str, device: str = "cuda"):
+def process_config(config_path: str, sam2_checkpoint: str, device: str = "cuda", sam2_model_cfg: str | None = None):
     """Process all videos in config"""
     config_path = Path(config_path)
 
@@ -271,7 +345,7 @@ def process_config(config_path: str, sam2_checkpoint: str, device: str = "cuda")
     print(f"{'='*70}\n")
 
     # Initialize SAM2
-    segmenter = SAM2PointSegmenter(sam2_checkpoint, device=device)
+    segmenter = SAM2PointSegmenter(sam2_checkpoint, model_cfg=sam2_model_cfg, device=device)
 
     # Process each video
     for i, video_info in enumerate(videos):
@@ -395,8 +469,10 @@ def process_config(config_path: str, sam2_checkpoint: str, device: str = "cuda")
 def main():
     parser = argparse.ArgumentParser(description="Stage 1: SAM2 Point-Prompted Segmentation")
     parser.add_argument("--config", required=True, help="Config JSON with primary_points")
-    parser.add_argument("--sam2-checkpoint", default="../sam2_hiera_large.pt",
+    parser.add_argument("--sam2-checkpoint", default="../sam2.1_hiera_large.pt",
                        help="Path to SAM2 checkpoint")
+    parser.add_argument("--sam2-model-cfg", default=None,
+                       help="Optional SAM2 model config override (e.g. sam2_hiera_l.yaml)")
     parser.add_argument("--device", default="cuda", help="Device (cuda/cpu)")
     args = parser.parse_args()
 
@@ -409,10 +485,10 @@ def main():
     if not checkpoint_path.exists():
         print(f"❌ Checkpoint not found: {checkpoint_path}")
         print(f"   Download with:")
-        print(f"   wget https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt")
+        print(f"   wget https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt")
         sys.exit(1)
 
-    process_config(args.config, str(checkpoint_path), args.device)
+    process_config(args.config, str(checkpoint_path), args.device, args.sam2_model_cfg)
 
 
 if __name__ == "__main__":

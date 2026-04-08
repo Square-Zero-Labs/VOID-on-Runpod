@@ -45,7 +45,7 @@ Optional flags:
 
 ```bash
 bash run_pipeline.sh <config_points.json> \
-    --sam2-checkpoint ../sam2_hiera_large.pt \
+    --sam2-checkpoint ../sam2.1_hiera_large.pt \
     --device cuda
 ```
 
@@ -86,26 +86,27 @@ pip install -r requirements.txt
 
 ### 2. SAM2
 
-SAM2 must be installed separately (it is not on PyPI):
+SAM 2.1 uses the latest code in the same repository and must be installed separately (it is not on PyPI):
 
 ```bash
-pip install git+https://github.com/facebookresearch/segment-anything-2.git
+pip install git+https://github.com/facebookresearch/segment-anything-2.git@aa9b8722d0585b661ded4b3dff1bd103540554ae
 ```
 
-Then download the SAM2 checkpoint. The pipeline defaults to `sam2_hiera_large.pt` one level above this directory:
+Then download the SAM 2.1 checkpoint. The pipeline defaults to `sam2.1_hiera_large.pt` one level above this directory:
 
 ```bash
 # from the repo root (or wherever you want to store it)
-wget https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt
+wget https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt
 ```
 
 If you place the checkpoint elsewhere, pass it explicitly:
 
 ```bash
-bash run_pipeline.sh config_points.json --sam2-checkpoint /path/to/sam2_hiera_large.pt
+bash run_pipeline.sh config_points.json --sam2-checkpoint /path/to/sam2.1_hiera_large.pt
 ```
 
-> SAM2 requires **Python ≥ 3.10** and **PyTorch ≥ 2.3.1** with CUDA. See the [SAM2 repo](https://github.com/facebookresearch/segment-anything-2) for full system requirements.
+> SAM 2.1 requires the latest `facebookresearch/sam2` code, **Python ≥ 3.10**, and **PyTorch ≥ 2.5.1** with CUDA. See the [official repo](https://github.com/facebookresearch/sam2) for current system requirements.
+> This repo now assumes a SAM 2.1-only environment. Older `sam2_hiera_*.pt` checkpoints are intentionally rejected instead of silently falling back to legacy configs.
 
 ### 3. Gemini API key
 

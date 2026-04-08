@@ -20,8 +20,10 @@ from void_runpod.app_state import (
     find_pass1_output,
     list_existing_jobs,
     load_existing_job,
+    make_point_entry,
     make_job_paths,
     overlay_points,
+    parse_point_entry,
     summarize_state,
     write_json,
     write_prompt,
@@ -35,7 +37,7 @@ WORKSPACE_DIR = Path(os.environ.get("VOID_WORKSPACE_DIR", str(APP_ROOT / ".void-
 BASE_MODEL_PATH = os.environ.get("VOID_BASE_MODEL_PATH", str(WORKSPACE_DIR / "checkpoints" / "CogVideoX-Fun-V1.5-5b-InP"))
 PASS1_MODEL_PATH = os.environ.get("VOID_PASS1_PATH", str(WORKSPACE_DIR / "checkpoints" / "void_pass1.safetensors"))
 PASS2_MODEL_PATH = os.environ.get("VOID_PASS2_PATH", str(WORKSPACE_DIR / "checkpoints" / "void_pass2.safetensors"))
-SAM2_CHECKPOINT_PATH = os.environ.get("VOID_SAM2_CHECKPOINT", str(WORKSPACE_DIR / "checkpoints" / "sam2_hiera_large.pt"))
+SAM2_CHECKPOINT_PATH = os.environ.get("VOID_SAM2_CHECKPOINT", str(WORKSPACE_DIR / "checkpoints" / "sam2.1_hiera_large.pt"))
 DEFAULT_GRADIO_PORT = int(os.environ.get("GRADIO_SERVER_PORT", "7860"))
 GREY_MASK_SEGMENTATION_MODEL = os.environ.get("VOID_GREY_MASK_SEGMENTATION_MODEL", "sam3")
 
@@ -324,10 +326,18 @@ def _frame_points_markdown(job_state: dict[str, Any] | None, frame_index: int) -
 
     frame_key = str(int(frame_index))
     frame_points = job_state.get("points_by_frame", {}).get(frame_key, [])
+    positive_points = 0
+    negative_points = 0
+    for point in frame_points:
+        _, _, label = parse_point_entry(point)
+        if label > 0:
+            positive_points += 1
+        else:
+            negative_points += 1
     frames_with_points = sum(1 for value in job_state.get("points_by_frame", {}).values() if value)
     return (
         f"**Current frame:** `{int(frame_index)}`\n\n"
-        f"- Points on this frame: `{len(frame_points)}`\n"
+        f"- Points on this frame: `{len(frame_points)}` ({positive_points}+, {negative_points}-)\n"
         f"- Frames with points: `{frames_with_points}`"
     )
 
@@ -556,7 +566,15 @@ def change_frame(job_state: dict[str, Any], frame_index: int, instruction: str, 
     )
 
 
-def add_point(job_state: dict[str, Any], frame_index: int, instruction: str, min_grid: int, multi_frame_grids: bool, evt: gr.SelectData) -> tuple[Any, ...]:
+def add_point(
+    job_state: dict[str, Any],
+    frame_index: int,
+    instruction: str,
+    min_grid: int,
+    multi_frame_grids: bool,
+    point_mode: str,
+    evt: gr.SelectData,
+) -> tuple[Any, ...]:
     if not job_state:
         raise gr.Error("Upload a video first.")
 
@@ -565,7 +583,8 @@ def add_point(job_state: dict[str, Any], frame_index: int, instruction: str, min
 
     x, y = evt.index
     frame_key = str(int(frame_index))
-    job_state["points_by_frame"].setdefault(frame_key, []).append([int(x), int(y)])
+    label = 0 if str(point_mode).lower().startswith("negative") else 1
+    job_state["points_by_frame"].setdefault(frame_key, []).append(make_point_entry(int(x), int(y), label))
     quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     return (
         job_state,
@@ -1411,12 +1430,18 @@ with gr.Blocks(title="VOID Runpod") as demo:
                 """
             )
             frame_image = gr.Image(
-                label="Current frame: click to add positive points",
+                label="Current frame: click to add a point",
                 interactive=True,
                 type="numpy",
             )
             frame_slider = gr.Slider(label="Frame", minimum=0, maximum=0, step=1, value=0)
             frame_points_md = gr.Markdown("No frame loaded.")
+            point_mode = gr.Radio(
+                label="Point type",
+                choices=["Positive", "Negative"],
+                value="Positive",
+                info="Positive points mark the object. Negative points suppress nearby distractors.",
+            )
             with gr.Row(elem_classes=["step-actions"]):
                 undo_button = gr.Button("Undo point")
                 clear_frame_button = gr.Button("Clear frame")
@@ -1645,7 +1670,7 @@ with gr.Blocks(title="VOID Runpod") as demo:
 
     frame_image.select(
         add_point,
-        inputs=[job_state, frame_slider, removal_instruction, min_grid, multi_frame_grids],
+        inputs=[job_state, frame_slider, removal_instruction, min_grid, multi_frame_grids, point_mode],
         outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, points_save_status, quadmask_button, pass1_button, pass2_button],
     )
 

@@ -11,6 +11,31 @@ import cv2
 import numpy as np
 
 
+def parse_point_entry(point: Any) -> tuple[int, int, int]:
+    if isinstance(point, dict):
+        x = int(point.get("x", 0))
+        y = int(point.get("y", 0))
+        raw_label = point.get("label", point.get("point_type", 1))
+        if isinstance(raw_label, str):
+            normalized = raw_label.strip().lower()
+            label = 0 if normalized in {"negative", "neg", "background", "exclude", "0"} else 1
+        else:
+            label = 1 if int(raw_label) > 0 else 0
+        return x, y, label
+
+    if isinstance(point, (list, tuple)):
+        if len(point) >= 3:
+            return int(point[0]), int(point[1]), 1 if int(point[2]) > 0 else 0
+        if len(point) >= 2:
+            return int(point[0]), int(point[1]), 1
+
+    raise ValueError(f"Unsupported point entry: {point!r}")
+
+
+def make_point_entry(x: int, y: int, label: int) -> dict[str, int]:
+    return {"x": int(x), "y": int(y), "label": 1 if int(label) > 0 else 0}
+
+
 def slugify(value: str, default: str = "job") -> str:
     normalized = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
     return normalized or default
@@ -217,12 +242,15 @@ def overlay_points(frame_path: str, points_by_frame: dict[str, list[list[int]]],
         raise RuntimeError(f"Failed to read frame: {frame_path}")
 
     frame_points = points_by_frame.get(str(frame_index), [])
-    for idx, (x, y) in enumerate(frame_points, start=1):
-        cv2.circle(frame, (int(x), int(y)), 12, (32, 241, 255), thickness=-1)
+    for idx, point in enumerate(frame_points, start=1):
+        x, y, label = parse_point_entry(point)
+        color = (32, 241, 255) if label > 0 else (76, 76, 255)
+        text = str(idx) if label > 0 else f"-{idx}"
+        cv2.circle(frame, (int(x), int(y)), 12, color, thickness=-1)
         cv2.circle(frame, (int(x), int(y)), 16, (0, 0, 0), thickness=2)
         cv2.putText(
             frame,
-            str(idx),
+            text,
             (int(x) + 14, int(y) - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
@@ -269,7 +297,16 @@ def summarize_state(job_state: dict[str, Any] | None) -> str:
     if not job_state:
         return "No job loaded."
 
-    total_points = sum(len(points) for points in job_state.get("points_by_frame", {}).values())
+    total_positive = 0
+    total_negative = 0
+    for frame_points in job_state.get("points_by_frame", {}).values():
+        for point in frame_points:
+            _, _, label = parse_point_entry(point)
+            if label > 0:
+                total_positive += 1
+            else:
+                total_negative += 1
+    total_points = total_positive + total_negative
     frames_with_points = sorted(int(key) for key, value in job_state.get("points_by_frame", {}).items() if value)
     frames_summary = ", ".join(str(value) for value in frames_with_points[:12]) or "none"
     if len(frames_with_points) > 12:
@@ -281,7 +318,7 @@ def summarize_state(job_state: dict[str, Any] | None) -> str:
         f"- Frames extracted: `{len(job_state['frame_paths'])}`\n"
         f"- Resolution: `{job_state['width']}x{job_state['height']}`\n"
         f"- FPS: `{job_state['fps']:.2f}`\n"
-        f"- Total selected points: `{total_points}`\n"
+        f"- Total selected points: `{total_points}` ({total_positive}+, {total_negative}-)\n"
         f"- Frames with points: `{frames_summary}`\n"
         f"- Workspace: `{job_state['job_dir']}`"
     )
