@@ -42,11 +42,15 @@ python_module_available() {
     local module_name="$1"
 
     MODULE_NAME="${module_name}" python3 - <<'PY'
-import importlib.util
+import importlib
 import os
 import sys
 
-sys.exit(0 if importlib.util.find_spec(os.environ["MODULE_NAME"]) is not None else 1)
+try:
+    importlib.import_module(os.environ["MODULE_NAME"])
+except Exception:
+    sys.exit(1)
+sys.exit(0)
 PY
 }
 
@@ -60,13 +64,6 @@ install_runtime_python_packages() {
     else
         log "Installing runtime git-based Python package: segment-anything-2"
         python3 -m pip install --no-cache-dir --no-build-isolation git+https://github.com/facebookresearch/segment-anything-2.git
-    fi
-
-    if python_module_available lang_sam; then
-        log "lang-segment-anything already importable"
-    else
-        log "Installing runtime git-based Python package: lang-segment-anything"
-        python3 -m pip install --no-cache-dir git+https://github.com/luca-medeiros/lang-segment-anything.git
     fi
 
     if python_module_available sam3; then

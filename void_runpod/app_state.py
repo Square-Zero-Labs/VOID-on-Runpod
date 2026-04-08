@@ -66,6 +66,16 @@ def make_job_paths(workspace_dir: Path, upload_name: str, requested_name: str | 
     return _job_paths_from_id(workspace_dir, job_id, create=True)
 
 
+def list_existing_jobs(workspace_dir: Path) -> list[str]:
+    jobs_root = workspace_dir / "jobs"
+    if not jobs_root.exists():
+        return []
+
+    job_dirs = [path for path in jobs_root.iterdir() if path.is_dir()]
+    job_dirs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return [path.name for path in job_dirs]
+
+
 def _video_metadata(video_path: str) -> dict[str, Any]:
     capture = cv2.VideoCapture(video_path)
     if not capture.isOpened():

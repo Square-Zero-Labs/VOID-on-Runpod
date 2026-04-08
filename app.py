@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+from time import perf_counter
 from pathlib import Path
 from typing import Any, Generator
 from urllib.parse import quote
@@ -17,6 +18,7 @@ from void_runpod.app_state import (
     copy_uploaded_video,
     extract_frames,
     find_pass1_output,
+    list_existing_jobs,
     load_existing_job,
     make_job_paths,
     overlay_points,
@@ -284,7 +286,7 @@ def _workflow_markdown(job_state: dict[str, Any] | None) -> str:
     has_pass2 = Path(artifact_path(job_state, "pass2")).exists()
 
     if stage == "needs_points":
-        next_step = "Add at least one point, or open the optional skip-ahead section if you already have a quadmask."
+        next_step = "Add at least one point, or load an existing quadmask for this source video to skip straight to Pass 1."
     elif stage == "ready_quadmask":
         next_step = "Create or regenerate the quadmask."
     elif stage == "ready_pass1":
@@ -318,6 +320,19 @@ def _frame_points_markdown(job_state: dict[str, Any] | None, frame_index: int) -
     )
 
 
+def _job_name_update(job_state: dict[str, Any] | None) -> Any:
+    if not job_state:
+        return gr.update(value="", interactive=True)
+    return gr.update(value=job_state["job_id"], interactive=False)
+
+
+def _existing_job_dropdown_update(job_state: dict[str, Any] | None = None) -> Any:
+    ensure_workspace()
+    job_choices = list_existing_jobs(WORKSPACE_DIR)
+    selected_job = job_state["job_id"] if job_state else None
+    return gr.update(choices=job_choices, value=selected_job, interactive=True)
+
+
 def _workflow_stage(job_state: dict[str, Any] | None) -> str:
     if not job_state:
         return "needs_job"
@@ -338,39 +353,32 @@ def _workflow_stage(job_state: dict[str, Any] | None) -> str:
     return "complete"
 
 
-def _primary_action_update(job_state: dict[str, Any] | None) -> Any:
-    stage = _workflow_stage(job_state)
-    if stage == "needs_job":
-        return gr.update(value="Load A Job First", interactive=False)
-    if stage == "needs_points":
-        return gr.update(value="Add Points Before Generating Quadmask", interactive=False)
-    if stage == "ready_quadmask":
-        return gr.update(value="Create / Regenerate Quadmask", interactive=True)
-    if stage == "ready_pass1":
-        return gr.update(value="Run Pass 1", interactive=True)
-    if stage == "ready_pass2":
-        return gr.update(value="Run Pass 2", interactive=True)
-    return gr.update(value="Pipeline Complete", interactive=False)
-
-
-def _action_button_updates(job_state: dict[str, Any] | None) -> tuple[Any, Any, Any, Any]:
+def _action_button_updates(job_state: dict[str, Any] | None) -> tuple[Any, Any, Any]:
     has_job = bool(job_state)
     has_points = _has_selected_points(job_state)
     has_quadmask = has_job and Path(artifact_path(job_state, "quadmask")).exists()
     has_pass1 = has_job and bool(find_pass1_output(job_state))
 
     return (
-        _primary_action_update(job_state),
         gr.update(interactive=has_job and has_points),
         gr.update(interactive=has_quadmask),
         gr.update(interactive=has_quadmask and has_pass1),
     )
 
 
+def _step_visibility_updates(job_state: dict[str, Any] | None) -> tuple[Any, Any]:
+    has_quadmask = bool(job_state) and Path(artifact_path(job_state, "quadmask")).exists()
+    return (
+        gr.update(visible=not has_quadmask),
+        gr.update(visible=not has_quadmask),
+    )
+
+
 def _job_outputs(
     job_state: dict[str, Any],
-    import_quadmask_status: str = "",
-    import_pass1_status: str = "",
+    quadmask_log_text: str = "",
+    pass1_log_text: str = "",
+    pass2_log_text: str = "",
 ) -> tuple[Any, ...]:
     frame_image = _render_frame(job_state, 0)
     slider_update = gr.update(minimum=0, maximum=max(len(job_state["frame_paths"]) - 1, 0), value=0, step=1)
@@ -381,6 +389,7 @@ def _job_outputs(
         job_state.get("multi_frame_grids", True),
     )
     pass1_output = find_pass1_output(job_state)
+    step3_visibility, step4_visibility = _step_visibility_updates(job_state)
 
     return (
         job_state,
@@ -390,6 +399,10 @@ def _job_outputs(
         slider_update,
         _frame_points_markdown(job_state, 0),
         points_preview,
+        _job_name_update(job_state),
+        _existing_job_dropdown_update(job_state),
+        step3_visibility,
+        step4_visibility,
         job_state["input_video_path"],
         _artifacts_markdown(job_state),
         _workflow_markdown(job_state),
@@ -398,9 +411,9 @@ def _job_outputs(
         job_state.get("background_prompt", ""),
         gr.update(value=job_state.get("min_grid", 8)),
         gr.update(value=job_state.get("multi_frame_grids", True)),
-        "",
-        import_quadmask_status,
-        import_pass1_status,
+        quadmask_log_text,
+        pass1_log_text,
+        pass2_log_text,
         artifact_path(job_state, "black_mask") if Path(artifact_path(job_state, "black_mask")).exists() else None,
         _download_link_html(artifact_path(job_state, "black_mask"), "Open SAM2 mask in new tab"),
         artifact_path(job_state, "quadmask") if Path(artifact_path(job_state, "quadmask")).exists() else None,
@@ -410,20 +423,19 @@ def _job_outputs(
     )
 
 
-def _job_outputs_tail(job_state: dict[str, Any]) -> tuple[Any, str, Any, Any, Any, Any]:
+def _job_outputs_tail(job_state: dict[str, Any]) -> tuple[Any, str, Any, Any, Any]:
     pass2_output = artifact_path(job_state, "pass2")
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     return (
         pass2_output if Path(pass2_output).exists() else None,
         _download_link_html(pass2_output if Path(pass2_output).exists() else None, "Open Pass 2 video in new tab"),
-        primary_action_update,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
     )
 
 
-def prepare_job(upload_path: str, job_name: str | None) -> tuple[Any, ...]:
+def prepare_job(upload_path: str, job_name: str | None, initial_quadmask_upload_path: str | None) -> tuple[Any, ...]:
     ensure_workspace()
     if not upload_path:
         raise gr.Error("Upload a video first.")
@@ -442,7 +454,14 @@ def prepare_job(upload_path: str, job_name: str | None) -> tuple[Any, ...]:
     job_state["min_grid"] = 8
     job_state["multi_frame_grids"] = True
 
-    return _job_outputs(job_state) + _job_outputs_tail(job_state)
+    quadmask_message = ""
+    if initial_quadmask_upload_path:
+        quadmask_message, _ = _import_quadmask_into_job(job_state, initial_quadmask_upload_path)
+
+    return _job_outputs(
+        job_state,
+        quadmask_log_text=quadmask_message,
+    ) + _job_outputs_tail(job_state)
 
 
 def open_existing_job(requested_job_name: str) -> tuple[Any, ...]:
@@ -453,6 +472,51 @@ def open_existing_job(requested_job_name: str) -> tuple[Any, ...]:
         raise gr.Error(str(exc)) from exc
 
     return _job_outputs(job_state) + _job_outputs_tail(job_state)
+
+
+def reset_job() -> tuple[Any, ...]:
+    step3_visibility, step4_visibility = _step_visibility_updates(None)
+    return (
+        {},
+        _active_job_markdown(None),
+        "No job loaded.",
+        None,
+        gr.update(minimum=0, maximum=0, value=0, step=1),
+        "No frame loaded.",
+        {"videos": []},
+        gr.update(value="", interactive=True),
+        _existing_job_dropdown_update(),
+        step3_visibility,
+        step4_visibility,
+        gr.update(value=None),
+        gr.update(value=None),
+        None,
+        "No artifacts yet.",
+        _workflow_markdown(None),
+        "",
+        "remove the selected object",
+        "",
+        gr.update(value=8),
+        gr.update(value=True),
+        "",
+        "",
+        "",
+        None,
+        _download_link_html(None, "Open SAM2 mask in new tab"),
+        None,
+        _download_link_html(None, "Open quadmask in new tab"),
+        None,
+        _download_link_html(None, "Open Pass 1 video in new tab"),
+        None,
+        _download_link_html(None, "Open Pass 2 video in new tab"),
+        gr.update(interactive=False),
+        gr.update(interactive=False),
+        gr.update(interactive=False),
+    )
+
+
+def refresh_existing_jobs() -> Any:
+    return _existing_job_dropdown_update()
 
 
 def change_frame(job_state: dict[str, Any], frame_index: int, instruction: str, min_grid: int, multi_frame_grids: bool) -> tuple[Any, dict[str, Any]]:
@@ -473,7 +537,7 @@ def add_point(job_state: dict[str, Any], frame_index: int, instruction: str, min
     x, y = evt.index
     frame_key = str(int(frame_index))
     job_state["points_by_frame"].setdefault(frame_key, []).append([int(x), int(y)])
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     return (
         job_state,
         _render_frame(job_state, int(frame_index)),
@@ -481,7 +545,6 @@ def add_point(job_state: dict[str, Any], frame_index: int, instruction: str, min
         summarize_state(job_state),
         _frame_points_markdown(job_state, frame_index),
         _workflow_markdown(job_state),
-        primary_action_update,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -499,7 +562,7 @@ def undo_last_point(job_state: dict[str, Any], frame_index: int, instruction: st
     if not frame_points and frame_key in job_state["points_by_frame"]:
         job_state["points_by_frame"].pop(frame_key, None)
 
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     return (
         job_state,
         _render_frame(job_state, int(frame_index)),
@@ -507,7 +570,6 @@ def undo_last_point(job_state: dict[str, Any], frame_index: int, instruction: st
         summarize_state(job_state),
         _frame_points_markdown(job_state, frame_index),
         _workflow_markdown(job_state),
-        primary_action_update,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -519,7 +581,7 @@ def clear_frame_points(job_state: dict[str, Any], frame_index: int, instruction:
         raise gr.Error("Upload a video first.")
 
     job_state["points_by_frame"].pop(str(int(frame_index)), None)
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     return (
         job_state,
         _render_frame(job_state, int(frame_index)),
@@ -527,7 +589,6 @@ def clear_frame_points(job_state: dict[str, Any], frame_index: int, instruction:
         summarize_state(job_state),
         _frame_points_markdown(job_state, frame_index),
         _workflow_markdown(job_state),
-        primary_action_update,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -539,7 +600,7 @@ def clear_all_points(job_state: dict[str, Any], frame_index: int, instruction: s
         raise gr.Error("Upload a video first.")
 
     job_state["points_by_frame"] = {}
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     return (
         job_state,
         _render_frame(job_state, int(frame_index)),
@@ -547,7 +608,6 @@ def clear_all_points(job_state: dict[str, Any], frame_index: int, instruction: s
         summarize_state(job_state),
         _frame_points_markdown(job_state, frame_index),
         _workflow_markdown(job_state),
-        primary_action_update,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -597,29 +657,32 @@ def _video_match_message(source_video_path: str, candidate_video_path: str, labe
     return "WARNING:\n" + "\n".join(f"- {warning}" for warning in warnings)
 
 
+def _import_quadmask_into_job(job_state: dict[str, Any], quadmask_upload_path: str) -> tuple[str, str]:
+    destination = Path(artifact_path(job_state, "quadmask"))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    Path(destination).write_bytes(Path(quadmask_upload_path).read_bytes())
+
+    message = f"Imported existing quadmask to `{destination}`."
+    message += "\n\n" + _video_match_message(job_state["input_video_path"], quadmask_upload_path, "quadmask")
+    return message, str(destination)
+
+
 def import_existing_quadmask(job_state: dict[str, Any], quadmask_upload_path: str | None) -> tuple[Any, ...]:
     if not job_state:
         raise gr.Error("Upload and load a source video first.")
     if not quadmask_upload_path:
         raise gr.Error("Choose a quadmask video to upload.")
 
-    destination = Path(artifact_path(job_state, "quadmask"))
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    message, destination = _import_quadmask_into_job(job_state, quadmask_upload_path)
 
-    Path(destination).write_bytes(Path(quadmask_upload_path).read_bytes())
-
-    message = f"Imported existing quadmask to `{destination}`."
-    message += "\n\n" + _video_match_message(job_state["input_video_path"], quadmask_upload_path, "quadmask")
-
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     return (
         message,
         message,
-        str(destination),
-        _download_link_html(str(destination), "Open quadmask in new tab"),
+        destination,
+        _download_link_html(destination, "Open quadmask in new tab"),
         _artifacts_markdown(job_state),
         _workflow_markdown(job_state),
-        primary_action_update,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -638,15 +701,13 @@ def import_existing_pass1(job_state: dict[str, Any], pass1_upload_path: str | No
 
     message = f"Imported existing Pass 1 video to `{destination}`."
     message += "\n\n" + _video_match_message(job_state["input_video_path"], pass1_upload_path, "pass 1 video")
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     return (
-        message,
         message,
         str(destination),
         _download_link_html(str(destination), "Open Pass 1 video in new tab"),
         _artifacts_markdown(job_state),
         _workflow_markdown(job_state),
-        primary_action_update,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -706,16 +767,28 @@ def _format_failure(step_name: str, exc: Exception, log_path: Path | None = None
     return "\n".join(message)
 
 
+def _format_elapsed(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    minutes, secs = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 def _ensure_segmentation_backend_ready(model_name: str) -> None:
     if model_name != "sam3":
         return
     try:
         import sam3  # noqa: F401
-    except ImportError as exc:
+    except Exception as exc:
         raise gr.Error(
-            "SAM3 is selected for grey-mask generation, but the official `sam3` package is not installed. "
-            "Restart the app after startup provisioning. The first SAM3 use also needs approved access to the "
-            "gated `facebook/sam3` Hugging Face repo via `HF_TOKEN` or prior `hf auth login`."
+            "SAM3 is selected for grey-mask generation, but `import sam3` failed. "
+            "Restart the app after startup provisioning. If this persists, the package is present but one of its "
+            f"runtime imports is failing: {exc!r}. The first SAM3 use also needs approved access to the gated "
+            "`facebook/sam3` Hugging Face repo via `HF_TOKEN` or prior `hf auth login`."
         ) from exc
 
 
@@ -780,14 +853,14 @@ def run_quadmask_pipeline(
     job_state: dict[str, Any],
     instruction: str,
     background_prompt: str,
-    gemini_api_key: str,
     min_grid: int,
     multi_frame_grids: bool,
 ) -> Generator[tuple[Any, ...], None, None]:
     if not job_state:
         raise gr.Error("Upload a video first.")
-    if not gemini_api_key.strip():
-        raise gr.Error("Enter a Gemini API key.")
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not gemini_key:
+        raise gr.Error("Set `GEMINI_API_KEY` in the pod environment before running quadmask generation.")
     if not background_prompt.strip():
         raise gr.Error("Enter the clean-background prompt used by VOID inference.")
     if not any(job_state["points_by_frame"].values()):
@@ -801,7 +874,8 @@ def run_quadmask_pipeline(
 
     log_path = Path(job_state["logs_dir"]) / "quadmask.log"
     env = os.environ.copy()
-    env["GEMINI_API_KEY"] = gemini_api_key.strip()
+    env["GEMINI_API_KEY"] = gemini_key
+    start_time = perf_counter()
 
     commands = [
         ("SAM2 segmentation", [
@@ -837,7 +911,8 @@ def run_quadmask_pipeline(
     ]
 
     accumulated = ""
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    step3_visibility, step4_visibility = _step_visibility_updates(job_state)
     yield (
         "Preparing quadmask pipeline...\n",
         None,
@@ -847,7 +922,8 @@ def run_quadmask_pipeline(
         job_state["config_path"],
         _artifacts_markdown(job_state),
         _workflow_markdown(job_state),
-        primary_action_update,
+        step3_visibility,
+        step4_visibility,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -855,7 +931,8 @@ def run_quadmask_pipeline(
     try:
         for step_name, command in commands:
             accumulated = (accumulated + f"\n=== {step_name} ===\n")[-30000:]
-            primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+            quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+            step3_visibility, step4_visibility = _step_visibility_updates(job_state)
             yield (
                 accumulated,
                 None,
@@ -865,7 +942,8 @@ def run_quadmask_pipeline(
                 job_state["config_path"],
                 _artifacts_markdown(job_state),
                 _workflow_markdown(job_state),
-                primary_action_update,
+                step3_visibility,
+                step4_visibility,
                 quadmask_button_update,
                 pass1_button_update,
                 pass2_button_update,
@@ -874,7 +952,8 @@ def run_quadmask_pipeline(
             try:
                 while True:
                     accumulated = next(streamer)
-                    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+                    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+                    step3_visibility, step4_visibility = _step_visibility_updates(job_state)
                     yield (
                         accumulated,
                         None,
@@ -884,7 +963,8 @@ def run_quadmask_pipeline(
                         job_state["config_path"],
                         _artifacts_markdown(job_state),
                         _workflow_markdown(job_state),
-                        primary_action_update,
+                        step3_visibility,
+                        step4_visibility,
                         quadmask_button_update,
                         pass1_button_update,
                         pass2_button_update,
@@ -892,8 +972,11 @@ def run_quadmask_pipeline(
             except StopIteration as stop:
                 accumulated = stop.value or accumulated
     except Exception as exc:
+        elapsed = _format_elapsed(perf_counter() - start_time)
         failure_log = (accumulated + "\n" + _format_failure("Quadmask pipeline", exc, log_path) + "\n")[-30000:]
-        primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+        failure_log = (failure_log.rstrip() + f"\nTotal time before failure: {elapsed}\n")[-30000:]
+        quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+        step3_visibility, step4_visibility = _step_visibility_updates(job_state)
         yield (
             failure_log,
             None,
@@ -903,7 +986,8 @@ def run_quadmask_pipeline(
             job_state["config_path"],
             _artifacts_markdown(job_state),
             _workflow_markdown(job_state),
-            primary_action_update,
+            step3_visibility,
+            step4_visibility,
             quadmask_button_update,
             pass1_button_update,
             pass2_button_update,
@@ -911,8 +995,10 @@ def run_quadmask_pipeline(
         return
 
     black_mask_video, black_mask_link, quadmask_video, quadmask_link, artifacts_md = _quadmask_outputs(job_state)
-    success_log = (accumulated + "\nQuadmask pipeline complete.\n")[-30000:]
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    elapsed = _format_elapsed(perf_counter() - start_time)
+    success_log = (accumulated + f"\nQuadmask pipeline complete.\nTotal time: {elapsed}\n")[-30000:]
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    step3_visibility, step4_visibility = _step_visibility_updates(job_state)
     yield (
         success_log,
         black_mask_video,
@@ -922,7 +1008,8 @@ def run_quadmask_pipeline(
         job_state["config_path"],
         artifacts_md,
         _workflow_markdown(job_state),
-        primary_action_update,
+        step3_visibility,
+        step4_visibility,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -955,6 +1042,7 @@ def run_pass1(
 
     log_path = Path(job_state["logs_dir"]) / "pass1.log"
     env = os.environ.copy()
+    start_time = perf_counter()
     command = [
         PYTHON_BIN,
         str(VOID_ROOT / "inference" / "cogvideox_fun" / "predict_v2v.py"),
@@ -978,14 +1066,13 @@ def run_pass1(
         "Launching Pass 1...\n"
         f"Using source-aligned settings: frames={effective_max_frames}, window={effective_window}, fps={effective_fps}\n"
     )
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     yield (
         accumulated,
         None,
         _download_link_html(None, "Open Pass 1 video in new tab"),
         _artifacts_markdown(job_state),
         _workflow_markdown(job_state),
-        primary_action_update,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -995,14 +1082,13 @@ def run_pass1(
         try:
             while True:
                 accumulated = next(streamer)
-                primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+                quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
                 yield (
                     accumulated,
                     None,
                     _download_link_html(None, "Open Pass 1 video in new tab"),
                     _artifacts_markdown(job_state),
                     _workflow_markdown(job_state),
-                    primary_action_update,
                     quadmask_button_update,
                     pass1_button_update,
                     pass2_button_update,
@@ -1010,14 +1096,14 @@ def run_pass1(
         except StopIteration as stop:
             accumulated = stop.value or accumulated
     except Exception as exc:
-        primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+        elapsed = _format_elapsed(perf_counter() - start_time)
+        quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
         yield (
-            (accumulated + "\n" + _format_failure("Pass 1", exc, log_path) + "\n")[-30000:],
+            (accumulated + "\n" + _format_failure("Pass 1", exc, log_path) + f"\nTotal time before failure: {elapsed}\n")[-30000:],
             None,
             _download_link_html(None, "Open Pass 1 video in new tab"),
             _artifacts_markdown(job_state),
             _workflow_markdown(job_state),
-            primary_action_update,
             quadmask_button_update,
             pass1_button_update,
             pass2_button_update,
@@ -1025,14 +1111,14 @@ def run_pass1(
         return
 
     pass1_output = find_pass1_output(job_state)
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    elapsed = _format_elapsed(perf_counter() - start_time)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     yield (
-        (accumulated + "\nPass 1 complete.\n")[-30000:],
+        (accumulated + f"\nPass 1 complete.\nTotal time: {elapsed}\n")[-30000:],
         pass1_output,
         _download_link_html(pass1_output, "Open Pass 1 video in new tab"),
         _artifacts_markdown(job_state),
         _workflow_markdown(job_state),
-        primary_action_update,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -1068,6 +1154,7 @@ def run_pass2(
 
     log_path = Path(job_state["logs_dir"]) / "pass2.log"
     env = os.environ.copy()
+    start_time = perf_counter()
     accumulated = (
         "Launching Pass 2...\n"
         f"Using source-aligned settings: frames={effective_max_frames}, window={effective_window}, fps={effective_fps}\n"
@@ -1076,27 +1163,26 @@ def run_pass2(
     try:
         for message in _download_pass2_if_needed():
             accumulated = (accumulated + message)[-30000:]
-            primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+            quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
             yield (
                 accumulated,
                 None,
                 _download_link_html(None, "Open Pass 2 video in new tab"),
                 _artifacts_markdown(job_state),
                 _workflow_markdown(job_state),
-                primary_action_update,
                 quadmask_button_update,
                 pass1_button_update,
                 pass2_button_update,
             )
     except Exception as exc:
-        primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+        elapsed = _format_elapsed(perf_counter() - start_time)
+        quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
         yield (
-            (accumulated + "\n" + _format_failure("Pass 2 checkpoint download", exc) + "\n")[-30000:],
+            (accumulated + "\n" + _format_failure("Pass 2 checkpoint download", exc) + f"\nTotal time before failure: {elapsed}\n")[-30000:],
             None,
             _download_link_html(None, "Open Pass 2 video in new tab"),
             _artifacts_markdown(job_state),
             _workflow_markdown(job_state),
-            primary_action_update,
             quadmask_button_update,
             pass1_button_update,
             pass2_button_update,
@@ -1134,14 +1220,13 @@ def run_pass2(
         str(int(num_steps)),
     ]
 
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     yield (
         accumulated,
         None,
         _download_link_html(None, "Open Pass 2 video in new tab"),
         _artifacts_markdown(job_state),
         _workflow_markdown(job_state),
-        primary_action_update,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -1151,14 +1236,13 @@ def run_pass2(
         try:
             while True:
                 accumulated = next(streamer)
-                primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+                quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
                 yield (
                     accumulated,
                     None,
                     _download_link_html(None, "Open Pass 2 video in new tab"),
                     _artifacts_markdown(job_state),
                     _workflow_markdown(job_state),
-                    primary_action_update,
                     quadmask_button_update,
                     pass1_button_update,
                     pass2_button_update,
@@ -1166,14 +1250,14 @@ def run_pass2(
         except StopIteration as stop:
             accumulated = stop.value or accumulated
     except Exception as exc:
-        primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+        elapsed = _format_elapsed(perf_counter() - start_time)
+        quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
         yield (
-            (accumulated + "\n" + _format_failure("Pass 2", exc, log_path) + "\n")[-30000:],
+            (accumulated + "\n" + _format_failure("Pass 2", exc, log_path) + f"\nTotal time before failure: {elapsed}\n")[-30000:],
             None,
             _download_link_html(None, "Open Pass 2 video in new tab"),
             _artifacts_markdown(job_state),
             _workflow_markdown(job_state),
-            primary_action_update,
             quadmask_button_update,
             pass1_button_update,
             pass2_button_update,
@@ -1181,160 +1265,18 @@ def run_pass2(
         return
 
     pass2_output = artifact_path(job_state, "pass2")
-    primary_action_update, quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
+    elapsed = _format_elapsed(perf_counter() - start_time)
+    quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     yield (
-        (accumulated + "\nPass 2 complete.\n")[-30000:],
+        (accumulated + f"\nPass 2 complete.\nTotal time: {elapsed}\n")[-30000:],
         pass2_output if Path(pass2_output).exists() else None,
         _download_link_html(pass2_output if Path(pass2_output).exists() else None, "Open Pass 2 video in new tab"),
         _artifacts_markdown(job_state),
         _workflow_markdown(job_state),
-        primary_action_update,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
     )
-
-
-def run_primary_action(
-    job_state: dict[str, Any],
-    instruction: str,
-    background_prompt: str,
-    gemini_api_key: str,
-    min_grid: int,
-    multi_frame_grids: bool,
-    sample_height: int,
-    sample_width: int,
-    max_video_length: int,
-    temporal_window: int,
-    pass1_steps: int,
-    pass1_guidance: float,
-    pass2_steps: int,
-    pass2_guidance: float,
-) -> Generator[tuple[Any, ...], None, None]:
-    stage = _workflow_stage(job_state)
-
-    if stage == "ready_quadmask":
-        for (
-            activity,
-            black_mask_video,
-            black_mask_link,
-            quadmask_video,
-            quadmask_link,
-            points_config_path,
-            artifacts_md,
-            workflow_md,
-            primary_action_update,
-            quadmask_button_update,
-            pass1_button_update,
-            pass2_button_update,
-        ) in run_quadmask_pipeline(job_state, instruction, background_prompt, gemini_api_key, min_grid, multi_frame_grids):
-            yield (
-                activity,
-                black_mask_video,
-                black_mask_link,
-                quadmask_video,
-                quadmask_link,
-                points_config_path,
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                artifacts_md,
-                workflow_md,
-                primary_action_update,
-                quadmask_button_update,
-                pass1_button_update,
-                pass2_button_update,
-            )
-        return
-
-    if stage == "ready_pass1":
-        for (
-            activity,
-            pass1_video,
-            pass1_link,
-            artifacts_md,
-            workflow_md,
-            primary_action_update,
-            quadmask_button_update,
-            pass1_button_update,
-            pass2_button_update,
-        ) in run_pass1(
-            job_state,
-            background_prompt,
-            sample_height,
-            sample_width,
-            max_video_length,
-            temporal_window,
-            pass1_steps,
-            pass1_guidance,
-        ):
-            yield (
-                activity,
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                pass1_video,
-                pass1_link,
-                gr.update(),
-                gr.update(),
-                artifacts_md,
-                workflow_md,
-                primary_action_update,
-                quadmask_button_update,
-                pass1_button_update,
-                pass2_button_update,
-            )
-        return
-
-    if stage == "ready_pass2":
-        for (
-            activity,
-            pass2_video,
-            pass2_link,
-            artifacts_md,
-            workflow_md,
-            primary_action_update,
-            quadmask_button_update,
-            pass1_button_update,
-            pass2_button_update,
-        ) in run_pass2(
-            job_state,
-            background_prompt,
-            sample_height,
-            sample_width,
-            max_video_length,
-            temporal_window,
-            pass2_steps,
-            pass2_guidance,
-        ):
-            yield (
-                activity,
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                gr.update(),
-                pass2_video,
-                pass2_link,
-                artifacts_md,
-                workflow_md,
-                primary_action_update,
-                quadmask_button_update,
-                pass1_button_update,
-                pass2_button_update,
-            )
-        return
-
-    if stage == "needs_job":
-        raise gr.Error("Load a source video or reopen an existing job first.")
-    if stage == "needs_points":
-        raise gr.Error("Add at least one point before continuing, or import an existing quadmask.")
-    raise gr.Error("No further action is required right now.")
 
 
 with gr.Blocks(title="VOID Runpod") as demo:
@@ -1369,26 +1311,36 @@ with gr.Blocks(title="VOID Runpod") as demo:
                 """
                 <div class="step-kicker">Step 1</div>
                 <div class="step-title">Start Or Reopen A Job</div>
-                <p>Most users should upload a source video and optionally assign a reusable job name. If you already know the saved job name, reopen it instead.</p>
+                <p>If you want a custom reusable job name, enter it before clicking <strong>Load Video</strong>. Otherwise the app will auto-generate one and lock it for this job. If you already know a saved job name, reopen it instead.</p>
                 """
             )
             with gr.Tabs():
                 with gr.Tab("New Job"):
                     upload = gr.File(label="Source video", file_types=["video"], type="filepath")
+                    initial_quadmask_upload = gr.File(
+                        label="Existing quadmask for this source video (optional)",
+                        file_types=["video"],
+                        type="filepath",
+                    )
                     with gr.Row():
                         job_name = gr.Textbox(
-                            label="New job name",
-                            placeholder="Optional reusable name, for example dog-splash-shot-1",
-                            info="If you set this, the exact saved job name will be shown above as Active job.",
+                            label="Job name for this upload",
+                            placeholder="Optional. Set it now or the app will auto-name this job when you load the video.",
+                            info="This field is only used before loading. Once the job is created, the final job name is locked and shown above as Active job.",
                         )
                         load_button = gr.Button("Load Video", variant="primary")
+                        reset_button = gr.Button("Reset", variant="secondary")
                 with gr.Tab("Open Existing"):
                     with gr.Row():
-                        existing_job_name = gr.Textbox(
+                        existing_job_name = gr.Dropdown(
                             label="Existing job name",
-                            placeholder="Paste a previously shown active job name",
+                            choices=list_existing_jobs(WORKSPACE_DIR),
+                            allow_custom_value=True,
+                            filterable=True,
+                            info="Pick a saved job from the list or paste a job id manually.",
                         )
                         open_job_button = gr.Button("Open Existing Job")
+                        refresh_jobs_button = gr.Button("Refresh List")
             input_preview = gr.Video(label="Source video preview")
 
         with gr.Group(elem_classes=["step-card"]):
@@ -1396,7 +1348,7 @@ with gr.Blocks(title="VOID Runpod") as demo:
                 """
                 <div class="step-kicker">Step 2</div>
                 <div class="step-title">Describe The Removal And Background</div>
-                <p>Set the instruction for Gemini and describe what the scene should look like after the object and its effects are gone.</p>
+                <p>Set the instruction for Gemini and describe what the scene should look like after the object and its effects are gone. Gemini auth is taken from the pod environment via <code>GEMINI_API_KEY</code>.</p>
                 """
             )
             removal_instruction = gr.Textbox(
@@ -1410,14 +1362,8 @@ with gr.Blocks(title="VOID Runpod") as demo:
                 lines=3,
                 info="Used by VOID Pass 1 and Pass 2.",
             )
-            gemini_api_key = gr.Textbox(
-                label="Gemini API key",
-                type="password",
-                placeholder="Paste your Gemini key here before generating the quadmask",
-                info="Only required when you click Create / Regenerate Quadmask.",
-            )
 
-        with gr.Group(elem_classes=["step-card"]):
+        with gr.Group(elem_classes=["step-card"]) as step3_group:
             gr.Markdown(
                 """
                 <div class="step-kicker">Step 3</div>
@@ -1444,41 +1390,12 @@ with gr.Blocks(title="VOID Runpod") as demo:
                 points_json = gr.JSON(label="Points config preview")
                 points_config_path = gr.Textbox(label="Saved points config path", interactive=False)
 
-        with gr.Accordion("Skip Ahead With Existing Files (Optional)", open=False):
-            gr.Markdown(
-                """
-                <div class="step-kicker">Optional Shortcuts</div>
-                <div class="step-title">Reuse Intermediate Files</div>
-                <p>Most users should ignore this section and continue with the main workflow below. Open it only if you already generated a quadmask or Pass 1 result elsewhere.</p>
-                """
-            )
-            with gr.Group(elem_classes=["step-card"]):
-                gr.Markdown(
-                    """
-                    <div class="step-title">Use An Existing Quadmask</div>
-                    <p>Upload a finished <code>quadmask_0.mp4</code> if you want to skip quadmask generation and go straight to Pass 1.</p>
-                    """
-                )
-                quadmask_upload = gr.File(label="Existing quadmask video", file_types=["video"], type="filepath")
-                import_quadmask_button = gr.Button("Use Uploaded Quadmask")
-                import_quadmask_status = gr.Markdown("")
-            with gr.Group(elem_classes=["step-card"]):
-                gr.Markdown(
-                    """
-                    <div class="step-title">Use An Existing Pass 1 Output</div>
-                    <p>Upload a Pass 1 output if you want to skip directly to Pass 2.</p>
-                    """
-                )
-                pass1_upload = gr.File(label="Existing Pass 1 video", file_types=["video"], type="filepath")
-                import_pass1_button = gr.Button("Use Uploaded Pass 1")
-                import_pass1_status = gr.Markdown("")
-
-        with gr.Group(elem_classes=["step-card"]):
+        with gr.Group(elem_classes=["step-card"]) as step4_group:
             gr.Markdown(
                 """
                 <div class="step-kicker">Step 4</div>
-                <div class="step-title">Run Quadmask, Pass 1, And Pass 2</div>
-                <p>Generate the quadmask first. After that, run Pass 1, then Pass 2. If you uploaded an existing Pass 1 video, you can jump straight to Pass 2.</p>
+                <div class="step-title">Generate The Quadmask</div>
+                <p>Start here. Generate or regenerate the quadmask, then review it in the next section before moving on to Pass 1.</p>
                 """
             )
             with gr.Accordion("Inference Settings", open=False):
@@ -1492,55 +1409,57 @@ with gr.Blocks(title="VOID Runpod") as demo:
                     pass1_guidance = gr.Number(label="Pass 1 guidance", value=1.0)
                     pass2_steps = gr.Number(label="Pass 2 steps", value=50, precision=0)
                     pass2_guidance = gr.Number(label="Pass 2 guidance", value=6.0)
-            primary_action_button = gr.Button("Load A Job First", variant="primary", interactive=False)
-            with gr.Accordion("Manual Stage Actions", open=False):
-                with gr.Row(elem_classes=["step-actions"]):
-                    quadmask_button = gr.Button("Create / Regenerate Quadmask", interactive=False)
-                    pass1_button = gr.Button("Run Pass 1", interactive=False)
-                    pass2_button = gr.Button("Run Pass 2", interactive=False)
-            activity_log = gr.Textbox(label="Pipeline activity", lines=16, max_lines=22, autoscroll=True)
+            quadmask_button = gr.Button("Create / Regenerate Quadmask", variant="primary", interactive=False)
+            quadmask_log = gr.Textbox(label="Quadmask activity", lines=14, max_lines=20, autoscroll=True)
 
-        with gr.Accordion("Step 5: Review Quadmask Outputs", open=False):
-            with gr.Group(elem_classes=["step-card"]):
-                gr.Markdown(
-                    """
-                    <div class="step-title">Quadmask Outputs</div>
-                    <p>Use these previews to confirm the quadmask stage before moving into inference.</p>
-                    """
-                )
-                with gr.Row():
-                    with gr.Column():
-                        black_mask_video = gr.Video(label="SAM2 primary-object mask")
-                        black_mask_link = gr.HTML(_download_link_html(None, "Open SAM2 mask in new tab"))
-                    with gr.Column():
-                        quadmask_video = gr.Video(label="Quadmask preview")
-                        quadmask_link = gr.HTML(_download_link_html(None, "Open quadmask in new tab"))
+        with gr.Group(elem_classes=["step-card"]):
+            gr.Markdown(
+                """
+                <div class="step-kicker">Step 5</div>
+                <div class="step-title">Review The Quadmask</div>
+                <p>Check these previews first. If the quadmask looks right, the <strong>Run Pass 1</strong> button is directly below.</p>
+                """
+            )
+            with gr.Row():
+                with gr.Column():
+                    black_mask_video = gr.Video(label="SAM2 primary-object mask")
+                    black_mask_link = gr.HTML(_download_link_html(None, "Open SAM2 mask in new tab"))
+                with gr.Column():
+                    quadmask_video = gr.Video(label="Quadmask preview")
+                    quadmask_link = gr.HTML(_download_link_html(None, "Open quadmask in new tab"))
 
-        with gr.Accordion("Step 6: Review Pass 1 Output", open=False):
-            with gr.Group(elem_classes=["step-card"]):
-                gr.Markdown(
-                    """
-                    <div class="step-title">Pass 1 Output</div>
-                    <p>Check the Pass 1 output before deciding whether to continue to Pass 2.</p>
-                    """
-                )
-                pass1_video = gr.Video(label="Pass 1 output")
-                pass1_link = gr.HTML(_download_link_html(None, "Open Pass 1 video in new tab"))
+        with gr.Group(elem_classes=["step-card"]):
+            gr.Markdown(
+                """
+                <div class="step-kicker">Step 6</div>
+                <div class="step-title">Run And Review Pass 1</div>
+                <p>Run Pass 1 here, or upload an existing Pass 1 output if you want to skip directly to Pass 2. When the result looks good, the <strong>Run Pass 2</strong> button is directly below.</p>
+                """
+            )
+            pass1_button = gr.Button("Run Pass 1", variant="primary", interactive=False)
+            with gr.Accordion("Use An Existing Pass 1 Output Instead", open=False):
+                pass1_upload = gr.File(label="Existing Pass 1 video", file_types=["video"], type="filepath")
+                import_pass1_button = gr.Button("Use Uploaded Pass 1")
+            pass1_log = gr.Textbox(label="Pass 1 activity", lines=14, max_lines=20, autoscroll=True)
+            pass1_video = gr.Video(label="Pass 1 output")
+            pass1_link = gr.HTML(_download_link_html(None, "Open Pass 1 video in new tab"))
 
-        with gr.Accordion("Step 7: Review Pass 2 Output", open=False):
-            with gr.Group(elem_classes=["step-card"]):
-                gr.Markdown(
-                    """
-                    <div class="step-title">Pass 2 Output</div>
-                    <p>Pass 2 refines temporal consistency using the selected Pass 1 result.</p>
-                    """
-                )
-                pass2_video = gr.Video(label="Pass 2 output")
-                pass2_link = gr.HTML(_download_link_html(None, "Open Pass 2 video in new tab"))
+        with gr.Group(elem_classes=["step-card"]):
+            gr.Markdown(
+                """
+                <div class="step-kicker">Step 7</div>
+                <div class="step-title">Run And Review Pass 2</div>
+                <p>After Pass 1 looks good, run Pass 2 for temporal refinement.</p>
+                """
+            )
+            pass2_button = gr.Button("Run Pass 2", variant="primary", interactive=False)
+            pass2_log = gr.Textbox(label="Pass 2 activity", lines=14, max_lines=20, autoscroll=True)
+            pass2_video = gr.Video(label="Pass 2 output")
+            pass2_link = gr.HTML(_download_link_html(None, "Open Pass 2 video in new tab"))
 
     load_button.click(
         prepare_job,
-        inputs=[upload, job_name],
+        inputs=[upload, job_name, initial_quadmask_upload],
         outputs=[
             job_state,
             active_job_md,
@@ -1549,6 +1468,10 @@ with gr.Blocks(title="VOID Runpod") as demo:
             frame_slider,
             frame_points_md,
             points_json,
+            job_name,
+            existing_job_name,
+            step3_group,
+            step4_group,
             input_preview,
             artifacts_md,
             workflow_md,
@@ -1557,9 +1480,9 @@ with gr.Blocks(title="VOID Runpod") as demo:
             background_prompt,
             min_grid,
             multi_frame_grids,
-            activity_log,
-            import_quadmask_status,
-            import_pass1_status,
+            quadmask_log,
+            pass1_log,
+            pass2_log,
             black_mask_video,
             black_mask_link,
             quadmask_video,
@@ -1568,7 +1491,6 @@ with gr.Blocks(title="VOID Runpod") as demo:
             pass1_link,
             pass2_video,
             pass2_link,
-            primary_action_button,
             quadmask_button,
             pass1_button,
             pass2_button,
@@ -1586,6 +1508,10 @@ with gr.Blocks(title="VOID Runpod") as demo:
             frame_slider,
             frame_points_md,
             points_json,
+            job_name,
+            existing_job_name,
+            step3_group,
+            step4_group,
             input_preview,
             artifacts_md,
             workflow_md,
@@ -1594,9 +1520,9 @@ with gr.Blocks(title="VOID Runpod") as demo:
             background_prompt,
             min_grid,
             multi_frame_grids,
-            activity_log,
-            import_quadmask_status,
-            import_pass1_status,
+            quadmask_log,
+            pass1_log,
+            pass2_log,
             black_mask_video,
             black_mask_link,
             quadmask_video,
@@ -1605,11 +1531,61 @@ with gr.Blocks(title="VOID Runpod") as demo:
             pass1_link,
             pass2_video,
             pass2_link,
-            primary_action_button,
             quadmask_button,
             pass1_button,
             pass2_button,
         ],
+    )
+
+    reset_button.click(
+        reset_job,
+        outputs=[
+            job_state,
+            active_job_md,
+            job_summary,
+            frame_image,
+            frame_slider,
+            frame_points_md,
+            points_json,
+            job_name,
+            existing_job_name,
+            step3_group,
+            step4_group,
+            upload,
+            initial_quadmask_upload,
+            input_preview,
+            artifacts_md,
+            workflow_md,
+            points_config_path,
+            removal_instruction,
+            background_prompt,
+            min_grid,
+            multi_frame_grids,
+            quadmask_log,
+            pass1_log,
+            pass2_log,
+            black_mask_video,
+            black_mask_link,
+            quadmask_video,
+            quadmask_link,
+            pass1_video,
+            pass1_link,
+            pass2_video,
+            pass2_link,
+            quadmask_button,
+            pass1_button,
+            pass2_button,
+        ],
+    )
+
+    refresh_jobs_button.click(
+        refresh_existing_jobs,
+        outputs=[existing_job_name],
+    )
+
+    demo.load(
+        refresh_existing_jobs,
+        outputs=[existing_job_name],
     )
 
     frame_slider.change(
@@ -1621,25 +1597,25 @@ with gr.Blocks(title="VOID Runpod") as demo:
     frame_image.select(
         add_point,
         inputs=[job_state, frame_slider, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, primary_action_button, quadmask_button, pass1_button, pass2_button],
+        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, quadmask_button, pass1_button, pass2_button],
     )
 
     undo_button.click(
         undo_last_point,
         inputs=[job_state, frame_slider, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, primary_action_button, quadmask_button, pass1_button, pass2_button],
+        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, quadmask_button, pass1_button, pass2_button],
     )
 
     clear_frame_button.click(
         clear_frame_points,
         inputs=[job_state, frame_slider, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, primary_action_button, quadmask_button, pass1_button, pass2_button],
+        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, quadmask_button, pass1_button, pass2_button],
     )
 
     clear_all_button.click(
         clear_all_points,
         inputs=[job_state, frame_slider, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, primary_action_button, quadmask_button, pass1_button, pass2_button],
+        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, quadmask_button, pass1_button, pass2_button],
     )
 
     save_points_button.click(
@@ -1648,54 +1624,10 @@ with gr.Blocks(title="VOID Runpod") as demo:
         outputs=[points_json, points_config_path],
     )
 
-    import_quadmask_button.click(
-        import_existing_quadmask,
-        inputs=[job_state, quadmask_upload],
-        outputs=[import_quadmask_status, activity_log, quadmask_video, quadmask_link, artifacts_md, workflow_md, primary_action_button, quadmask_button, pass1_button, pass2_button],
-    )
-
     import_pass1_button.click(
         import_existing_pass1,
         inputs=[job_state, pass1_upload],
-        outputs=[import_pass1_status, activity_log, pass1_video, pass1_link, artifacts_md, workflow_md, primary_action_button, quadmask_button, pass1_button, pass2_button],
-    )
-
-    primary_action_button.click(
-        run_primary_action,
-        inputs=[
-            job_state,
-            removal_instruction,
-            background_prompt,
-            gemini_api_key,
-            min_grid,
-            multi_frame_grids,
-            sample_height,
-            sample_width,
-            max_video_length,
-            temporal_window,
-            pass1_steps,
-            pass1_guidance,
-            pass2_steps,
-            pass2_guidance,
-        ],
-        outputs=[
-            activity_log,
-            black_mask_video,
-            black_mask_link,
-            quadmask_video,
-            quadmask_link,
-            points_config_path,
-            pass1_video,
-            pass1_link,
-            pass2_video,
-            pass2_link,
-            artifacts_md,
-            workflow_md,
-            primary_action_button,
-            quadmask_button,
-            pass1_button,
-            pass2_button,
-        ],
+        outputs=[pass1_log, pass1_video, pass1_link, artifacts_md, workflow_md, quadmask_button, pass1_button, pass2_button],
     )
 
     removal_instruction.change(
@@ -1722,23 +1654,22 @@ with gr.Blocks(title="VOID Runpod") as demo:
             job_state,
             removal_instruction,
             background_prompt,
-            gemini_api_key,
             min_grid,
             multi_frame_grids,
         ],
-        outputs=[activity_log, black_mask_video, black_mask_link, quadmask_video, quadmask_link, points_config_path, artifacts_md, workflow_md, primary_action_button, quadmask_button, pass1_button, pass2_button],
+        outputs=[quadmask_log, black_mask_video, black_mask_link, quadmask_video, quadmask_link, points_config_path, artifacts_md, workflow_md, step3_group, step4_group, quadmask_button, pass1_button, pass2_button],
     )
 
     pass1_button.click(
         run_pass1,
         inputs=[job_state, background_prompt, sample_height, sample_width, max_video_length, temporal_window, pass1_steps, pass1_guidance],
-        outputs=[activity_log, pass1_video, pass1_link, artifacts_md, workflow_md, primary_action_button, quadmask_button, pass1_button, pass2_button],
+        outputs=[pass1_log, pass1_video, pass1_link, artifacts_md, workflow_md, quadmask_button, pass1_button, pass2_button],
     )
 
     pass2_button.click(
         run_pass2,
         inputs=[job_state, background_prompt, sample_height, sample_width, max_video_length, temporal_window, pass2_steps, pass2_guidance],
-        outputs=[activity_log, pass2_video, pass2_link, artifacts_md, workflow_md, primary_action_button, quadmask_button, pass1_button, pass2_button],
+        outputs=[pass2_log, pass2_video, pass2_link, artifacts_md, workflow_md, quadmask_button, pass1_button, pass2_button],
     )
 
 

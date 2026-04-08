@@ -25,6 +25,7 @@ docker build --platform=linux/amd64 -t void-runpod:latest .
 docker run --gpus all -p 7862:7862 \
   -e VOID_USERNAME=admin \
   -e VOID_PASSWORD=void \
+  -e GEMINI_API_KEY=your_gemini_api_key \
   -e HF_TOKEN=your_hf_read_token \
   void-runpod:latest
 ```
@@ -41,6 +42,7 @@ Optional environment variables:
 
 - `VOID_USERNAME` basic-auth username, default `admin`
 - `VOID_PASSWORD` basic-auth password, default `void`
+- `GEMINI_API_KEY` Gemini API key used for quadmask generation
 - `HF_TOKEN` Hugging Face token with read access. If you want `sam3` quadmask generation, the token must belong to an account that already has access to the gated `facebook/sam3` repo.
 - `VOID_WORKSPACE_DIR` override for where jobs and checkpoints are stored
 
@@ -54,7 +56,6 @@ It also installs the git-based runtime Python packages needed by the upstream su
 
 - `facebookresearch/segment-anything-2`
 - `facebookresearch/sam3`
-- `luca-medeiros/lang-segment-anything`
 
 The Pass 2 checkpoint `void_pass2.safetensors` is downloaded lazily the first time a user runs Pass 2.
 
@@ -74,7 +75,7 @@ The Gradio app then guides the user through:
 
 1. Uploading a video and optionally assigning a reusable job name.
 2. Clicking points on any frame to build the original points JSON.
-3. Entering the Gemini API key and clean-background prompt.
+3. Setting the clean-background prompt, with Gemini auth coming from `GEMINI_API_KEY` in the pod environment.
 4. Creating and previewing `quadmask_0.mp4`.
 5. Running Pass 1.
 6. Running Pass 2.
