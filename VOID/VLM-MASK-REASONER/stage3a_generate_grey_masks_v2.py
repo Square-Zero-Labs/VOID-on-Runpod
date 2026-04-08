@@ -35,13 +35,13 @@ Usage:
 """
 
 import os
-import sys
 import json
 import argparse
+import traceback
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 from PIL import Image
 import subprocess
 
@@ -55,7 +55,7 @@ except ImportError:
 # SAM3 for single-frame segmentation
 try:
     from sam3.model_builder import build_sam3_image_model
-    from sam3.model.sam3_image_processor import Sam3Processor
+    from sam3_safe_processor import SafeSam3Processor
     SAM3_AVAILABLE = True
 except ImportError:
     SAM3_AVAILABLE = False
@@ -79,8 +79,15 @@ class SegmentationModel:
                 raise ImportError("SAM3 not available")
             print(f"   Loading SAM3...")
             model = build_sam3_image_model()
-            self.processor = Sam3Processor(model)
+            model.eval()
             self.model = model
+            confidence_threshold = float(os.environ.get("VOID_SAM3_CONFIDENCE_THRESHOLD", "0.5"))
+            print(f"   SAM3 confidence threshold: {confidence_threshold}")
+            self.processor = SafeSam3Processor(
+                self.model,
+                device=next(self.model.parameters()).device,
+                confidence_threshold=confidence_threshold,
+            )
         elif self.model_type == "langsam":
             if not LANGSAM_AVAILABLE:
                 raise ImportError("LangSAM not available")
@@ -100,13 +107,24 @@ class SegmentationModel:
         import torch
         h, w = image_pil.height, image_pil.width
         union = np.zeros((h, w), dtype=bool)
+        debug = os.environ.get("VOID_SAM3_DEBUG", "0").lower() not in {"0", "false", "no"}
 
         try:
             inference_state = self.processor.set_image(image_pil)
             output = self.processor.set_text_prompt(state=inference_state, prompt=prompt)
             masks = output.get("masks")
+            scores = output.get("scores")
+            boxes = output.get("boxes")
+            masks_logits = output.get("masks_logits")
+
+            if debug and scores is not None and torch.is_tensor(scores):
+                print(f"         [SAM3] Scores: {[round(float(x), 4) for x in scores.detach().cpu().flatten().tolist()]}")
+            if debug and boxes is not None and torch.is_tensor(boxes):
+                print(f"         [SAM3] Boxes kept: {int(boxes.shape[0])}")
 
             if masks is None or len(masks) == 0:
+                if debug and masks_logits is not None and torch.is_tensor(masks_logits):
+                    print(f"         [SAM3] masks_logits shape={tuple(masks_logits.shape)}")
                 return union
 
             if torch.is_tensor(masks):
@@ -121,6 +139,7 @@ class SegmentationModel:
 
         except Exception as e:
             print(f"         Warning: SAM3 failed: {e}")
+            print(traceback.format_exc().rstrip())
 
         return union
 
@@ -196,6 +215,80 @@ def gridify_masks(masks: List[np.ndarray], grid_rows: int, grid_cols: int) -> Li
         gridified_masks.append(gridified)
 
     return gridified_masks
+
+
+def grid_regions_to_mask(
+    grid_regions: List[Dict[str, int]],
+    grid_rows: int,
+    grid_cols: int,
+    frame_width: int,
+    frame_height: int,
+) -> np.ndarray:
+    """Convert VLM grid regions into a full-resolution boolean mask."""
+    mask = np.zeros((frame_height, frame_width), dtype=bool)
+    cell_width = frame_width / max(grid_cols, 1)
+    cell_height = frame_height / max(grid_rows, 1)
+
+    for region in grid_regions:
+        row = int(region.get("row", -1))
+        col = int(region.get("col", -1))
+        if row < 0 or col < 0 or row >= grid_rows or col >= grid_cols:
+            continue
+        y1 = int(row * cell_height)
+        y2 = int((row + 1) * cell_height)
+        x1 = int(col * cell_width)
+        x2 = int((col + 1) * cell_width)
+        mask[y1:y2, x1:x2] = True
+
+    return mask
+
+
+def masks_from_grid_localizations(
+    grid_localizations: List[Dict],
+    total_frames: int,
+    grid_rows: int,
+    grid_cols: int,
+    frame_width: int,
+    frame_height: int,
+) -> List[np.ndarray]:
+    """Expand sparse VLM grid localizations into per-frame masks by holding each sample until the next one."""
+    masks = [np.zeros((frame_height, frame_width), dtype=bool) for _ in range(total_frames)]
+    if not grid_localizations:
+        return masks
+
+    normalized_locs = []
+    for loc in grid_localizations:
+        frame_idx = int(loc.get("frame", 0))
+        frame_idx = max(0, min(total_frames - 1, frame_idx))
+        mask = grid_regions_to_mask(
+            loc.get("grid_regions", []),
+            grid_rows,
+            grid_cols,
+            frame_width,
+            frame_height,
+        )
+        normalized_locs.append((frame_idx, mask))
+
+    if not normalized_locs:
+        return masks
+
+    normalized_locs.sort(key=lambda item: item[0])
+
+    for index, (start_frame, mask) in enumerate(normalized_locs):
+        if index + 1 < len(normalized_locs):
+            end_frame = normalized_locs[index + 1][0]
+        else:
+            end_frame = total_frames
+
+        if index == 0 and start_frame > 0:
+            for frame_idx in range(0, start_frame):
+                masks[frame_idx] = mask.copy()
+
+        for frame_idx in range(start_frame, max(start_frame + 1, end_frame)):
+            if frame_idx < total_frames:
+                masks[frame_idx] = mask.copy()
+
+    return masks
 
 
 def get_object_size(mask: np.ndarray) -> Tuple[int, int]:
@@ -299,8 +392,6 @@ def segment_object_all_frames(video_path: str, obj_noun: str, segmenter: Segment
             mask = segmenter.segment(frame_pil, obj_noun)
             masks.append(mask)
 
-            if (frame_idx + 1) % 10 == 0:
-                print(f"         Frame {frame_idx + 1}/{total_frames}...", end='\r')
         else:
             # Reuse previous mask
             if masks:
@@ -311,7 +402,6 @@ def segment_object_all_frames(video_path: str, obj_noun: str, segmenter: Segment
         frame_idx += 1
 
     cap.release()
-    print(f"         Segmented {total_frames} frames")
 
     return masks
 
@@ -333,6 +423,13 @@ def filter_masks_by_proximity(masks: List[np.ndarray], primary_mask: np.ndarray,
         filtered.append(filtered_mask)
 
     return filtered
+
+
+def calculate_proximity_dilation(frame_width: int, frame_height: int, grid_rows: int, grid_cols: int) -> int:
+    """Scale proximity dilation with the effective grid-cell size."""
+    cell_width = frame_width / max(grid_cols, 1)
+    cell_height = frame_height / max(grid_rows, 1)
+    return max(50, int(round(min(cell_width, cell_height) * 0.75)))
 
 
 def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
@@ -454,22 +551,50 @@ def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
 
                     break
 
+        grid_localizations = obj.get("grid_localizations", [])
+        if not has_trajectory and grid_localizations:
+            obj_masks = masks_from_grid_localizations(
+                grid_localizations,
+                total_frames,
+                grid_rows,
+                grid_cols,
+                frame_width,
+                frame_height,
+            )
+            pixel_count = sum(int(mask.sum()) for mask in obj_masks)
+
+            for i in range(len(obj_masks)):
+                if i < len(accumulated_masks):
+                    accumulated_masks[i] |= obj_masks[i]
+
+            print(
+                "         Source: VLM grid localizations "
+                f"({len(grid_localizations)} samples, {pixel_count} pixels across {len(obj_masks)} frames)"
+            )
+            continue
+
         # If NO user trajectory, segment through ALL frames
         # This captures: static objects, objects that move during video, dynamic effects
         if not has_trajectory:
-            print(f"         Segmenting through ALL frames (captures any movement/changes)...")
             obj_masks = segment_object_all_frames(str(input_video_path), noun, segmenter, frame_stride=5)
 
+            raw_pixel_count = sum(int(mask.sum()) for mask in obj_masks)
+            proximity_dilation = calculate_proximity_dilation(frame_width, frame_height, grid_rows, grid_cols)
+
             # Filter by proximity to primary mask
-            obj_masks_filtered = filter_masks_by_proximity(obj_masks, primary_mask, dilation=50)
+            obj_masks_filtered = filter_masks_by_proximity(obj_masks, primary_mask, dilation=proximity_dilation)
+            filtered_pixel_count = sum(int(mask.sum()) for mask in obj_masks_filtered)
 
             # Accumulate
             for i in range(len(obj_masks_filtered)):
                 if i < len(accumulated_masks):
                     accumulated_masks[i] |= obj_masks_filtered[i]
 
-            pixel_count = sum(mask.sum() for mask in obj_masks_filtered)
-            print(f"         ✓ Segmented across {len(obj_masks_filtered)} frames ({pixel_count} total pixels)")
+            print(
+                "         Source: SAM3 "
+                f"(raw={raw_pixel_count}, kept={filtered_pixel_count}, "
+                f"frames={len(obj_masks_filtered)}, dilation={proximity_dilation})"
+            )
 
     # GRIDIFY all accumulated masks
     print(f"   Gridifying masks...")

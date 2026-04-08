@@ -17,9 +17,9 @@ Usage:
 """
 
 import os
-import sys
 import json
 import argparse
+import traceback
 import cv2
 import numpy as np
 from pathlib import Path
@@ -30,7 +30,7 @@ import subprocess
 # Segmentation model
 try:
     from sam3.model_builder import build_sam3_image_model
-    from sam3.model.sam3_image_processor import Sam3Processor
+    from sam3_safe_processor import SafeSam3Processor
     SAM3_AVAILABLE = True
 except ImportError:
     SAM3_AVAILABLE = False
@@ -53,8 +53,15 @@ class SegmentationModel:
                 raise ImportError("SAM3 not available")
             print(f"   Loading SAM3...")
             model = build_sam3_image_model()
-            self.processor = Sam3Processor(model)
+            model.eval()
             self.model = model
+            confidence_threshold = float(os.environ.get("VOID_SAM3_CONFIDENCE_THRESHOLD", "0.5"))
+            print(f"   SAM3 confidence threshold: {confidence_threshold}")
+            self.processor = SafeSam3Processor(
+                self.model,
+                device=next(self.model.parameters()).device,
+                confidence_threshold=confidence_threshold,
+            )
         elif self.model_type == "langsam":
             if not LANGSAM_AVAILABLE:
                 raise ImportError("LangSAM not available")
@@ -74,13 +81,24 @@ class SegmentationModel:
         import torch
         h, w = image_pil.height, image_pil.width
         union = np.zeros((h, w), dtype=bool)
+        debug = os.environ.get("VOID_SAM3_DEBUG", "0").lower() not in {"0", "false", "no"}
 
         try:
             inference_state = self.processor.set_image(image_pil)
             output = self.processor.set_text_prompt(state=inference_state, prompt=prompt)
             masks = output.get("masks")
+            scores = output.get("scores")
+            boxes = output.get("boxes")
+            masks_logits = output.get("masks_logits")
+
+            if debug and scores is not None and torch.is_tensor(scores):
+                print(f"    [SAM3] Scores: {[round(float(x), 4) for x in scores.detach().cpu().flatten().tolist()]}")
+            if debug and boxes is not None and torch.is_tensor(boxes):
+                print(f"    [SAM3] Boxes kept: {int(boxes.shape[0])}")
 
             if masks is None or len(masks) == 0:
+                if debug and masks_logits is not None and torch.is_tensor(masks_logits):
+                    print(f"    [SAM3] masks_logits shape={tuple(masks_logits.shape)}")
                 return union
 
             if torch.is_tensor(masks):
@@ -95,6 +113,7 @@ class SegmentationModel:
 
         except Exception as e:
             print(f"    Warning: SAM3 segmentation failed for '{prompt}': {e}")
+            print(traceback.format_exc().rstrip())
 
         return union
 
@@ -166,6 +185,33 @@ def grid_cells_to_mask(grid_cells: List[List[int]], grid_rows: int, grid_cols: i
     cell_height = frame_height / grid_rows
 
     for row, col in grid_cells:
+        y1 = int(row * cell_height)
+        y2 = int((row + 1) * cell_height)
+        x1 = int(col * cell_width)
+        x2 = int((col + 1) * cell_width)
+        mask[y1:y2, x1:x2] = True
+
+    return mask
+
+
+def grid_regions_to_mask(
+    grid_regions: List[Dict[str, int]],
+    grid_rows: int,
+    grid_cols: int,
+    frame_width: int,
+    frame_height: int,
+) -> np.ndarray:
+    """Convert VLM grid-localized regions into a full-resolution mask."""
+    mask = np.zeros((frame_height, frame_width), dtype=bool)
+    cell_width = frame_width / max(grid_cols, 1)
+    cell_height = frame_height / max(grid_rows, 1)
+
+    for region in grid_regions:
+        row = int(region.get("row", -1))
+        col = int(region.get("col", -1))
+        if row < 0 or col < 0 or row >= grid_rows or col >= grid_cols:
+            continue
+
         y1 = int(row * cell_height)
         y2 = int((row + 1) * cell_height)
         x1 = int(col * cell_width)
@@ -278,6 +324,7 @@ def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
         category = obj.get('category', 'physical')
         will_move = obj.get('will_move', False)
         needs_trajectory = obj.get('needs_trajectory', False)
+        grid_localizations = obj.get("grid_localizations", [])
 
         if not noun:
             continue
@@ -299,6 +346,29 @@ def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
                     grey_mask_combined |= traj_mask
                     has_trajectory = True
                     break
+
+        if not has_trajectory and grid_localizations:
+            print(
+                "         Using VLM grid localizations "
+                f"({len(grid_localizations)} sampled frame(s))"
+            )
+            grid_mask = np.zeros((frame_height, frame_width), dtype=bool)
+            for loc in grid_localizations:
+                grid_mask |= grid_regions_to_mask(
+                    loc.get("grid_regions", []),
+                    grid_rows,
+                    grid_cols,
+                    frame_width,
+                    frame_height,
+                )
+
+            if grid_mask.any():
+                grey_mask_combined |= grid_mask
+                print(f"         Grid-localized pixels: {int(grid_mask.sum())}")
+                print(f"         ✓ Added grid-localized region to grey mask")
+                continue
+            else:
+                print("         ⚠️  Grid localizations were empty, falling back to segmentation")
 
         # If no trajectory or doesn't need one, segment normally
         if not has_trajectory:

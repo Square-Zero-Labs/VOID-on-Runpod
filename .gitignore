@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .void-workspace/
 .secrets
+examples/
+.DS_Store
+VOID/.DS_Store

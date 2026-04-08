@@ -171,6 +171,18 @@ textarea, input, .gr-textbox, .gr-number, .gr-dropdown, .gradio-container .gr-fo
   font-size: 0.94rem;
 }
 
+.save-status {
+  min-height: 1.4rem;
+}
+
+.save-status p {
+  margin: 4px 0 0;
+}
+
+.save-status strong {
+  color: var(--success);
+}
+
 .download-link {
   margin-top: 10px;
 }
@@ -320,16 +332,29 @@ def _frame_points_markdown(job_state: dict[str, Any] | None, frame_index: int) -
     )
 
 
+def _points_save_status_markdown(config_path: str | None = None) -> str:
+    if not config_path:
+        return ""
+    return f"**Saved points JSON.** `{config_path}`"
+
+
+def _write_ui_state(job_state: dict[str, Any]) -> None:
+    write_json(
+        job_state["ui_state_path"],
+        {"initial_quadmask_uploaded": bool(job_state.get("initial_quadmask_uploaded", False))},
+    )
+
+
 def _job_name_update(job_state: dict[str, Any] | None) -> Any:
     if not job_state:
         return gr.update(value="", interactive=True)
     return gr.update(value=job_state["job_id"], interactive=False)
 
 
-def _existing_job_dropdown_update(job_state: dict[str, Any] | None = None) -> Any:
+def _existing_job_dropdown_update(job_state: dict[str, Any] | None = None, requested_value: str | None = None) -> Any:
     ensure_workspace()
     job_choices = list_existing_jobs(WORKSPACE_DIR)
-    selected_job = job_state["job_id"] if job_state else None
+    selected_job = job_state["job_id"] if job_state else (requested_value.strip() if requested_value and requested_value.strip() else None)
     return gr.update(choices=job_choices, value=selected_job, interactive=True)
 
 
@@ -366,11 +391,11 @@ def _action_button_updates(job_state: dict[str, Any] | None) -> tuple[Any, Any, 
     )
 
 
-def _step_visibility_updates(job_state: dict[str, Any] | None) -> tuple[Any, Any]:
-    has_quadmask = bool(job_state) and Path(artifact_path(job_state, "quadmask")).exists()
+def _step_panel_updates(job_state: dict[str, Any] | None) -> tuple[Any, Any]:
+    collapse_steps = bool(job_state) and bool(job_state.get("initial_quadmask_uploaded"))
     return (
-        gr.update(visible=not has_quadmask),
-        gr.update(visible=not has_quadmask),
+        gr.update(open=not collapse_steps, visible=True),
+        gr.update(open=not collapse_steps, visible=True),
     )
 
 
@@ -389,7 +414,7 @@ def _job_outputs(
         job_state.get("multi_frame_grids", True),
     )
     pass1_output = find_pass1_output(job_state)
-    step3_visibility, step4_visibility = _step_visibility_updates(job_state)
+    step3_panel, step4_panel = _step_panel_updates(job_state)
 
     return (
         job_state,
@@ -401,12 +426,13 @@ def _job_outputs(
         points_preview,
         _job_name_update(job_state),
         _existing_job_dropdown_update(job_state),
-        step3_visibility,
-        step4_visibility,
+        step3_panel,
+        step4_panel,
         job_state["input_video_path"],
         _artifacts_markdown(job_state),
         _workflow_markdown(job_state),
         job_state["config_path"] if Path(job_state["config_path"]).exists() else "",
+        "",
         job_state.get("removal_instruction", "remove the selected object"),
         job_state.get("background_prompt", ""),
         gr.update(value=job_state.get("min_grid", 8)),
@@ -453,6 +479,8 @@ def prepare_job(upload_path: str, job_name: str | None, initial_quadmask_upload_
     job_state["background_prompt"] = ""
     job_state["min_grid"] = 8
     job_state["multi_frame_grids"] = True
+    job_state["initial_quadmask_uploaded"] = bool(initial_quadmask_upload_path)
+    _write_ui_state(job_state)
 
     quadmask_message = ""
     if initial_quadmask_upload_path:
@@ -475,7 +503,7 @@ def open_existing_job(requested_job_name: str) -> tuple[Any, ...]:
 
 
 def reset_job() -> tuple[Any, ...]:
-    step3_visibility, step4_visibility = _step_visibility_updates(None)
+    step3_panel, step4_panel = _step_panel_updates(None)
     return (
         {},
         _active_job_markdown(None),
@@ -486,13 +514,14 @@ def reset_job() -> tuple[Any, ...]:
         {"videos": []},
         gr.update(value="", interactive=True),
         _existing_job_dropdown_update(),
-        step3_visibility,
-        step4_visibility,
+        step3_panel,
+        step4_panel,
         gr.update(value=None),
         gr.update(value=None),
         None,
         "No artifacts yet.",
         _workflow_markdown(None),
+        "",
         "",
         "remove the selected object",
         "",
@@ -515,8 +544,8 @@ def reset_job() -> tuple[Any, ...]:
     )
 
 
-def refresh_existing_jobs() -> Any:
-    return _existing_job_dropdown_update()
+def refresh_existing_jobs(requested_job_name: str | None = None) -> Any:
+    return _existing_job_dropdown_update(requested_value=requested_job_name)
 
 
 def change_frame(job_state: dict[str, Any], frame_index: int, instruction: str, min_grid: int, multi_frame_grids: bool) -> tuple[Any, dict[str, Any]]:
@@ -545,6 +574,7 @@ def add_point(job_state: dict[str, Any], frame_index: int, instruction: str, min
         summarize_state(job_state),
         _frame_points_markdown(job_state, frame_index),
         _workflow_markdown(job_state),
+        "",
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -570,6 +600,7 @@ def undo_last_point(job_state: dict[str, Any], frame_index: int, instruction: st
         summarize_state(job_state),
         _frame_points_markdown(job_state, frame_index),
         _workflow_markdown(job_state),
+        "",
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -589,6 +620,7 @@ def clear_frame_points(job_state: dict[str, Any], frame_index: int, instruction:
         summarize_state(job_state),
         _frame_points_markdown(job_state, frame_index),
         _workflow_markdown(job_state),
+        "",
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -608,23 +640,24 @@ def clear_all_points(job_state: dict[str, Any], frame_index: int, instruction: s
         summarize_state(job_state),
         _frame_points_markdown(job_state, frame_index),
         _workflow_markdown(job_state),
+        "",
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
     )
 
 
-def save_points_config(job_state: dict[str, Any], instruction: str, min_grid: int, multi_frame_grids: bool) -> tuple[dict[str, Any], str]:
+def save_points_config(job_state: dict[str, Any], instruction: str, min_grid: int, multi_frame_grids: bool) -> tuple[dict[str, Any], str, str]:
     if not job_state:
         raise gr.Error("Upload a video first.")
 
     payload = build_points_json(job_state, instruction, min_grid, multi_frame_grids)
     write_json(job_state["config_path"], payload)
-    return payload, job_state["config_path"]
+    return payload, job_state["config_path"], _points_save_status_markdown(job_state["config_path"])
 
 
-def refresh_points_preview(job_state: dict[str, Any], instruction: str, min_grid: int, multi_frame_grids: bool) -> dict[str, Any]:
-    return _points_json_preview(job_state, instruction, min_grid, multi_frame_grids)
+def refresh_points_preview(job_state: dict[str, Any], instruction: str, min_grid: int, multi_frame_grids: bool) -> tuple[dict[str, Any], str]:
+    return _points_json_preview(job_state, instruction, min_grid, multi_frame_grids), ""
 
 
 def _video_match_message(source_video_path: str, candidate_video_path: str, label: str) -> str:
@@ -674,6 +707,8 @@ def import_existing_quadmask(job_state: dict[str, Any], quadmask_upload_path: st
         raise gr.Error("Choose a quadmask video to upload.")
 
     message, destination = _import_quadmask_into_job(job_state, quadmask_upload_path)
+    job_state["initial_quadmask_uploaded"] = True
+    _write_ui_state(job_state)
 
     quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
     return (
@@ -912,7 +947,7 @@ def run_quadmask_pipeline(
 
     accumulated = ""
     quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
-    step3_visibility, step4_visibility = _step_visibility_updates(job_state)
+    step3_panel, step4_panel = _step_panel_updates(job_state)
     yield (
         "Preparing quadmask pipeline...\n",
         None,
@@ -922,8 +957,8 @@ def run_quadmask_pipeline(
         job_state["config_path"],
         _artifacts_markdown(job_state),
         _workflow_markdown(job_state),
-        step3_visibility,
-        step4_visibility,
+        step3_panel,
+        step4_panel,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -932,7 +967,7 @@ def run_quadmask_pipeline(
         for step_name, command in commands:
             accumulated = (accumulated + f"\n=== {step_name} ===\n")[-30000:]
             quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
-            step3_visibility, step4_visibility = _step_visibility_updates(job_state)
+            step3_panel, step4_panel = _step_panel_updates(job_state)
             yield (
                 accumulated,
                 None,
@@ -942,8 +977,8 @@ def run_quadmask_pipeline(
                 job_state["config_path"],
                 _artifacts_markdown(job_state),
                 _workflow_markdown(job_state),
-                step3_visibility,
-                step4_visibility,
+                step3_panel,
+                step4_panel,
                 quadmask_button_update,
                 pass1_button_update,
                 pass2_button_update,
@@ -953,7 +988,7 @@ def run_quadmask_pipeline(
                 while True:
                     accumulated = next(streamer)
                     quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
-                    step3_visibility, step4_visibility = _step_visibility_updates(job_state)
+                    step3_panel, step4_panel = _step_panel_updates(job_state)
                     yield (
                         accumulated,
                         None,
@@ -963,8 +998,8 @@ def run_quadmask_pipeline(
                         job_state["config_path"],
                         _artifacts_markdown(job_state),
                         _workflow_markdown(job_state),
-                        step3_visibility,
-                        step4_visibility,
+                        step3_panel,
+                        step4_panel,
                         quadmask_button_update,
                         pass1_button_update,
                         pass2_button_update,
@@ -976,7 +1011,7 @@ def run_quadmask_pipeline(
         failure_log = (accumulated + "\n" + _format_failure("Quadmask pipeline", exc, log_path) + "\n")[-30000:]
         failure_log = (failure_log.rstrip() + f"\nTotal time before failure: {elapsed}\n")[-30000:]
         quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
-        step3_visibility, step4_visibility = _step_visibility_updates(job_state)
+        step3_panel, step4_panel = _step_panel_updates(job_state)
         yield (
             failure_log,
             None,
@@ -986,8 +1021,8 @@ def run_quadmask_pipeline(
             job_state["config_path"],
             _artifacts_markdown(job_state),
             _workflow_markdown(job_state),
-            step3_visibility,
-            step4_visibility,
+            step3_panel,
+            step4_panel,
             quadmask_button_update,
             pass1_button_update,
             pass2_button_update,
@@ -998,7 +1033,7 @@ def run_quadmask_pipeline(
     elapsed = _format_elapsed(perf_counter() - start_time)
     success_log = (accumulated + f"\nQuadmask pipeline complete.\nTotal time: {elapsed}\n")[-30000:]
     quadmask_button_update, pass1_button_update, pass2_button_update = _action_button_updates(job_state)
-    step3_visibility, step4_visibility = _step_visibility_updates(job_state)
+    step3_panel, step4_panel = _step_panel_updates(job_state)
     yield (
         success_log,
         black_mask_video,
@@ -1008,8 +1043,8 @@ def run_quadmask_pipeline(
         job_state["config_path"],
         artifacts_md,
         _workflow_markdown(job_state),
-        step3_visibility,
-        step4_visibility,
+        step3_panel,
+        step4_panel,
         quadmask_button_update,
         pass1_button_update,
         pass2_button_update,
@@ -1279,6 +1314,10 @@ def run_pass2(
     )
 
 
+ensure_workspace()
+INITIAL_EXISTING_JOBS = list_existing_jobs(WORKSPACE_DIR)
+
+
 with gr.Blocks(title="VOID Runpod") as demo:
     job_state = gr.State({})
 
@@ -1334,7 +1373,7 @@ with gr.Blocks(title="VOID Runpod") as demo:
                     with gr.Row():
                         existing_job_name = gr.Dropdown(
                             label="Existing job name",
-                            choices=list_existing_jobs(WORKSPACE_DIR),
+                            choices=INITIAL_EXISTING_JOBS,
                             allow_custom_value=True,
                             filterable=True,
                             info="Pick a saved job from the list or paste a job id manually.",
@@ -1363,7 +1402,7 @@ with gr.Blocks(title="VOID Runpod") as demo:
                 info="Used by VOID Pass 1 and Pass 2.",
             )
 
-        with gr.Group(elem_classes=["step-card"]) as step3_group:
+        with gr.Accordion("Step 3: Mark The Object Across Frames", open=True, elem_classes=["step-card"]) as step3_group:
             gr.Markdown(
                 """
                 <div class="step-kicker">Step 3</div>
@@ -1383,6 +1422,7 @@ with gr.Blocks(title="VOID Runpod") as demo:
                 clear_frame_button = gr.Button("Clear frame")
                 clear_all_button = gr.Button("Clear all points")
                 save_points_button = gr.Button("Save points JSON")
+            points_save_status = gr.Markdown("", elem_classes=["compact-note", "save-status"])
 
             with gr.Accordion("Mask Reasoning Options", open=False):
                 min_grid = gr.Number(label="Grid density", value=8, precision=0)
@@ -1390,7 +1430,7 @@ with gr.Blocks(title="VOID Runpod") as demo:
                 points_json = gr.JSON(label="Points config preview")
                 points_config_path = gr.Textbox(label="Saved points config path", interactive=False)
 
-        with gr.Group(elem_classes=["step-card"]) as step4_group:
+        with gr.Accordion("Step 4: Generate The Quadmask", open=True, elem_classes=["step-card"]) as step4_group:
             gr.Markdown(
                 """
                 <div class="step-kicker">Step 4</div>
@@ -1476,6 +1516,7 @@ with gr.Blocks(title="VOID Runpod") as demo:
             artifacts_md,
             workflow_md,
             points_config_path,
+            points_save_status,
             removal_instruction,
             background_prompt,
             min_grid,
@@ -1498,6 +1539,10 @@ with gr.Blocks(title="VOID Runpod") as demo:
     )
 
     open_job_button.click(
+        refresh_existing_jobs,
+        inputs=[existing_job_name],
+        outputs=[existing_job_name],
+    ).then(
         open_existing_job,
         inputs=[existing_job_name],
         outputs=[
@@ -1516,6 +1561,7 @@ with gr.Blocks(title="VOID Runpod") as demo:
             artifacts_md,
             workflow_md,
             points_config_path,
+            points_save_status,
             removal_instruction,
             background_prompt,
             min_grid,
@@ -1557,6 +1603,7 @@ with gr.Blocks(title="VOID Runpod") as demo:
             artifacts_md,
             workflow_md,
             points_config_path,
+            points_save_status,
             removal_instruction,
             background_prompt,
             min_grid,
@@ -1580,11 +1627,13 @@ with gr.Blocks(title="VOID Runpod") as demo:
 
     refresh_jobs_button.click(
         refresh_existing_jobs,
+        inputs=[existing_job_name],
         outputs=[existing_job_name],
     )
 
     demo.load(
         refresh_existing_jobs,
+        inputs=[existing_job_name],
         outputs=[existing_job_name],
     )
 
@@ -1597,31 +1646,31 @@ with gr.Blocks(title="VOID Runpod") as demo:
     frame_image.select(
         add_point,
         inputs=[job_state, frame_slider, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, quadmask_button, pass1_button, pass2_button],
+        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, points_save_status, quadmask_button, pass1_button, pass2_button],
     )
 
     undo_button.click(
         undo_last_point,
         inputs=[job_state, frame_slider, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, quadmask_button, pass1_button, pass2_button],
+        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, points_save_status, quadmask_button, pass1_button, pass2_button],
     )
 
     clear_frame_button.click(
         clear_frame_points,
         inputs=[job_state, frame_slider, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, quadmask_button, pass1_button, pass2_button],
+        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, points_save_status, quadmask_button, pass1_button, pass2_button],
     )
 
     clear_all_button.click(
         clear_all_points,
         inputs=[job_state, frame_slider, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, quadmask_button, pass1_button, pass2_button],
+        outputs=[job_state, frame_image, points_json, job_summary, frame_points_md, workflow_md, points_save_status, quadmask_button, pass1_button, pass2_button],
     )
 
     save_points_button.click(
         save_points_config,
         inputs=[job_state, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[points_json, points_config_path],
+        outputs=[points_json, points_config_path, points_save_status],
     )
 
     import_pass1_button.click(
@@ -1633,19 +1682,19 @@ with gr.Blocks(title="VOID Runpod") as demo:
     removal_instruction.change(
         refresh_points_preview,
         inputs=[job_state, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[points_json],
+        outputs=[points_json, points_save_status],
     )
 
     min_grid.change(
         refresh_points_preview,
         inputs=[job_state, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[points_json],
+        outputs=[points_json, points_save_status],
     )
 
     multi_frame_grids.change(
         refresh_points_preview,
         inputs=[job_state, removal_instruction, min_grid, multi_frame_grids],
-        outputs=[points_json],
+        outputs=[points_json, points_save_status],
     )
 
     quadmask_button.click(

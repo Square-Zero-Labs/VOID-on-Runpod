@@ -46,6 +46,7 @@ def _job_paths_from_id(workspace_dir: Path, job_id: str, create: bool = True) ->
         "input_video_path": str(sequence_dir / "input_video.mp4"),
         "prompt_path": str(sequence_dir / "prompt.json"),
         "config_path": str(job_dir / "config_points.json"),
+        "ui_state_path": str(job_dir / "ui_state.json"),
     }
 
 
@@ -194,12 +195,19 @@ def load_existing_job(workspace_dir: Path, requested_name: str) -> dict[str, Any
         prompt_payload = json.load(open(prompt_path, "r", encoding="utf-8"))
         background_prompt = prompt_payload.get("bg", "") or ""
 
+    ui_state_path = Path(job_state["ui_state_path"])
+    initial_quadmask_uploaded = False
+    if ui_state_path.exists():
+        ui_state_payload = json.load(open(ui_state_path, "r", encoding="utf-8"))
+        initial_quadmask_uploaded = bool(ui_state_payload.get("initial_quadmask_uploaded", False))
+
     job_state.update(metadata)
     job_state["points_by_frame"] = points_by_frame
     job_state["removal_instruction"] = removal_instruction
     job_state["background_prompt"] = background_prompt
     job_state["min_grid"] = min_grid
     job_state["multi_frame_grids"] = multi_frame_grids
+    job_state["initial_quadmask_uploaded"] = initial_quadmask_uploaded
     return job_state
 
 
