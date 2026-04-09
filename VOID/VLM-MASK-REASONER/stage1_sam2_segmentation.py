@@ -36,7 +36,7 @@ try:
 except ImportError:
     SAM2_AVAILABLE = False
     print("⚠️  SAM2 not installed. Install with:")
-    print("   pip install git+https://github.com/facebookresearch/segment-anything-2.git@aa9b8722d0585b661ded4b3dff1bd103540554ae")
+    print("   pip install git+https://github.com/facebookresearch/sam2.git@aa9b8722d0585b661ded4b3dff1bd103540554ae")
     sys.exit(1)
 
 

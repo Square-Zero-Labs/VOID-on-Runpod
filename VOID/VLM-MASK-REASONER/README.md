@@ -89,7 +89,7 @@ pip install -r requirements.txt
 SAM 2.1 uses the latest code in the same repository and must be installed separately (it is not on PyPI):
 
 ```bash
-pip install git+https://github.com/facebookresearch/segment-anything-2.git@aa9b8722d0585b661ded4b3dff1bd103540554ae
+pip install git+https://github.com/facebookresearch/sam2.git@aa9b8722d0585b661ded4b3dff1bd103540554ae
 ```
 
 Then download the SAM 2.1 checkpoint. The pipeline defaults to `sam2.1_hiera_large.pt` one level above this directory:

@@ -62,29 +62,28 @@ has_hf_auth() {
 sam2_supports_sam21() {
     python3 - <<'PY'
 import importlib
-import pathlib
+import importlib.resources
 import sys
 
 try:
-    sam2 = importlib.import_module("sam2")
+    importlib.import_module("sam2")
 except Exception:
     sys.exit(1)
 
-sam2_root = pathlib.Path(sam2.__file__).resolve().parent
-candidates = [
-    sam2_root / "configs" / "sam2.1" / "sam2.1_hiera_l.yaml",
-    sam2_root.parent / "sam2" / "configs" / "sam2.1" / "sam2.1_hiera_l.yaml",
-]
-sys.exit(0 if any(path.exists() for path in candidates) else 1)
+try:
+    config_path = importlib.resources.files("sam2").joinpath("configs", "sam2.1", "sam2.1_hiera_l.yaml")
+    sys.exit(0 if config_path.is_file() else 1)
+except Exception:
+    sys.exit(1)
 PY
 }
 
 install_runtime_python_packages() {
     if python_module_available sam2 && sam2_supports_sam21; then
-        log "segment-anything-2 already importable with SAM 2.1 support"
+        log "sam2 already importable with SAM 2.1 support"
     elif ! python_module_available sam2; then
-        log "Installing runtime git-based Python package: segment-anything-2 @ ${SAM2_GIT_REF}"
-        python3 -m pip install --no-cache-dir --no-build-isolation "git+https://github.com/facebookresearch/segment-anything-2.git@${SAM2_GIT_REF}"
+        log "Installing runtime git-based Python package: sam2 @ ${SAM2_GIT_REF}"
+        python3 -m pip install --no-cache-dir --no-build-isolation "git+https://github.com/facebookresearch/sam2.git@${SAM2_GIT_REF}"
     else
         log "Installed sam2 package does not expose SAM 2.1 configs. This image should ship the pinned SAM 2.1-compatible package already."
         log "Expected git ref: ${SAM2_GIT_REF}"

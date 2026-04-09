@@ -54,7 +54,7 @@ On first boot the startup script copies the app to `/workspace/VOID-on-Runpod`, 
 
 It also installs the git-based runtime Python packages needed by the upstream subtree:
 
-- `facebookresearch/segment-anything-2` pinned in code to `aa9b8722d0585b661ded4b3dff1bd103540554ae` for SAM 2.1 compatibility
+- `facebookresearch/sam2` pinned in code to `aa9b8722d0585b661ded4b3dff1bd103540554ae` for SAM 2.1 compatibility
 - `facebookresearch/sam3`
 
 The Pass 2 checkpoint `void_pass2.safetensors` is downloaded lazily the first time a user runs Pass 2.
