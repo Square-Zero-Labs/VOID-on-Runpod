@@ -57,7 +57,7 @@ It also installs the git-based runtime Python packages needed by the upstream su
 - `facebookresearch/sam2` pinned in the Docker image to `aa9b8722d0585b661ded4b3dff1bd103540554ae` and installed with `SAM2_BUILD_CUDA=0 pip install .` for SAM 2.1 compatibility
 - `facebookresearch/sam3`
 
-The startup script assumes a SAM 2.1-only environment. `sam2` is expected to be preinstalled in the image; startup only verifies that the package exposes SAM 2.1 configs and fails fast if not.
+The startup script assumes a SAM 2.1-only environment. `sam2` is expected to be preinstalled in the image.
 The image intentionally skips the optional SAM2 CUDA post-processing extension for a more reliable build. The stage-1 pipeline therefore defaults `VOID_SAM2_APPLY_POSTPROCESSING=0`; set it to `1` only if you rebuild SAM2 with the extension enabled.
 
 The Pass 2 checkpoint `void_pass2.safetensors` is downloaded lazily the first time a user runs Pass 2.

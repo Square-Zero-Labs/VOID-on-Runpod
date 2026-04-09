@@ -62,17 +62,23 @@ has_hf_auth() {
 sam2_supports_sam21() {
     python3 - <<'PY'
 import importlib
-import importlib.resources
 import sys
 
 try:
     importlib.import_module("sam2")
+    build_sam = importlib.import_module("sam2.build_sam")
+    from hydra import compose
 except Exception:
     sys.exit(1)
 
+expected_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+hf_map = getattr(build_sam, "HF_MODEL_ID_TO_FILENAMES", {})
+if hf_map.get("facebook/sam2.1-hiera-large", (None, None))[0] != expected_cfg:
+    sys.exit(1)
+
 try:
-    config_path = importlib.resources.files("sam2").joinpath("configs", "sam2.1", "sam2.1_hiera_l.yaml")
-    sys.exit(0 if config_path.is_file() else 1)
+    compose(config_name=expected_cfg, overrides=[])
+    sys.exit(0)
 except Exception:
     sys.exit(1)
 PY
@@ -83,7 +89,7 @@ install_runtime_python_packages() {
         log "sam2 already importable with SAM 2.1 support"
     else
         log "sam2 is missing or does not expose SAM 2.1 configs."
-        log "This image is expected to preinstall facebookresearch/sam2 @ ${SAM2_GIT_REF} with pip install . during docker build."
+        log "This image is expected to preinstall facebookresearch/sam2 @ ${SAM2_GIT_REF} with SAM2_BUILD_CUDA=0 pip install . during docker build."
         log "Expected git ref: ${SAM2_GIT_REF}"
         exit 1
     fi

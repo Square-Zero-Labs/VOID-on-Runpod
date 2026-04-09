@@ -37,7 +37,7 @@ except ImportError:
     SAM2_AVAILABLE = False
     print("⚠️  SAM2 not installed. Install with:")
     print("   git clone https://github.com/facebookresearch/sam2.git")
-    print("   cd sam2 && git checkout aa9b8722d0585b661ded4b3dff1bd103540554ae && pip install .")
+    print("   cd sam2 && git checkout aa9b8722d0585b661ded4b3dff1bd103540554ae && SAM2_BUILD_CUDA=0 pip install .")
     sys.exit(1)
 
 
