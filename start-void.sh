@@ -88,10 +88,8 @@ install_runtime_python_packages() {
     if python_module_available sam2 && sam2_supports_sam21; then
         log "sam2 already importable with SAM 2.1 support"
     else
-        log "sam2 is missing or does not expose SAM 2.1 configs."
-        log "This image is expected to preinstall facebookresearch/sam2 @ ${SAM2_GIT_REF} with SAM2_BUILD_CUDA=0 pip install . during docker build."
-        log "Expected git ref: ${SAM2_GIT_REF}"
-        exit 1
+        log "Warning: sam2 is missing or does not expose SAM 2.1 configs."
+        log "The pod will continue to start, but SAM2-backed quadmask generation will fail until sam2 is fixed in the image."
     fi
 
     if python_module_available sam3; then
