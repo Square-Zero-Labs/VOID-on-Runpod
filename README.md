@@ -54,7 +54,7 @@ On first boot the startup script copies the app to `/workspace/VOID-on-Runpod`, 
 
 It also installs the git-based runtime Python packages needed by the upstream subtree:
 
-- `facebookresearch/sam2` pinned in the Docker image to `aa9b8722d0585b661ded4b3dff1bd103540554ae` and installed with `SAM2_BUILD_CUDA=0 pip install .` for SAM 2.1 compatibility
+- `facebookresearch/sam2` pinned in the Docker image to `aa9b8722d0585b661ded4b3dff1bd103540554ae` and installed with `SAM2_BUILD_CUDA=0 pip install -e .` for SAM 2.1 compatibility
 - `facebookresearch/sam3`
 
 The startup script assumes a SAM 2.1-only environment. `sam2` is expected to be preinstalled in the image.

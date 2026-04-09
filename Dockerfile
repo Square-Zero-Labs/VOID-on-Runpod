@@ -34,9 +34,8 @@ RUN mkdir -p /opt/sam2 && \
     git remote add origin https://github.com/facebookresearch/sam2.git && \
     git fetch --depth 1 origin aa9b8722d0585b661ded4b3dff1bd103540554ae && \
     git checkout FETCH_HEAD && \
-    SAM2_BUILD_CUDA=0 python3 -m pip install --no-cache-dir --no-build-isolation . && \
-    cd /opt && \
-    rm -rf /opt/sam2 /root/.cache/pip
+    SAM2_BUILD_CUDA=0 python3 -m pip install --no-cache-dir --no-build-isolation -e . && \
+    rm -rf /root/.cache/pip
 
 COPY . /opt/void_template
 

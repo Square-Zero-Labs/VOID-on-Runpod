@@ -92,7 +92,7 @@ SAM 2.1 uses the latest code in the same repository and must be installed separa
 git clone https://github.com/facebookresearch/sam2.git
 cd sam2
 git checkout aa9b8722d0585b661ded4b3dff1bd103540554ae
-SAM2_BUILD_CUDA=0 pip install .
+SAM2_BUILD_CUDA=0 pip install -e .
 ```
 
 Then download the SAM 2.1 checkpoint. The pipeline defaults to `sam2.1_hiera_large.pt` one level above this directory:
