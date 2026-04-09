@@ -13,11 +13,25 @@ The app supports:
 - lazy download of the Pass 2 checkpoint only when Pass 2 is requested
 - nginx basic auth in front of Gradio
 
+## Differences From Upstream VOID
+
+This wrapper stays close to the researchers' pipeline, but it intentionally changes two pieces of mask generation:
+
+- `SAM 2.1` only for Stage 1 primary-object segmentation. This repo pins `facebookresearch/sam2` to a SAM 2.1-compatible commit and uses the `sam2.1_hiera_large.pt` checkpoint. Older `sam2_hiera_*.pt` checkpoints are intentionally not supported.
+- Connected affected-region handling in Stage 3a. When Gemini's analysis only identifies affected areas on a few frames, this repo carries those regions across the frames in between so the grey mask stays more continuous and less patchy over time.
+- A small SAM3 runtime wrapper for stability. This repo uses a patched SAM3 processor to avoid dtype and fused-kernel issues that otherwise made grey-mask generation unreliable in our environment.
+
 ## Build
 
 ```bash
 docker build --platform=linux/amd64 -t void-runpod:latest .
 ```
+
+## Setup
+
+- Get a Gemini API Key with billing turned on - https://aistudio.google.com/api-keys
+- Get approval to access the SAM3 model weights on Hugging Face - https://huggingface.co/facebook/sam3
+- Get an access token with read access on Hugging Face - https://huggingface.co/settings/tokens
 
 ## Run Locally
 
@@ -36,15 +50,14 @@ If you plan to use upstream `sam3` for quadmask generation, `HF_TOKEN` should be
 
 ## Runpod Deploy Notes
 
-Expose port `7862` and launch on an A40 or L40 pod.
+Expose ports `7862` and `8888` and launch on an A40 or L40 pod.
 
-Optional environment variables:
+Environment variables:
 
 - `VOID_USERNAME` basic-auth username, default `admin`
 - `VOID_PASSWORD` basic-auth password, default `void`
 - `GEMINI_API_KEY` Gemini API key used for quadmask generation
 - `HF_TOKEN` Hugging Face token with read access. If you want `sam3` quadmask generation, the token must belong to an account that already has access to the gated `facebook/sam3` repo.
-- `VOID_WORKSPACE_DIR` override for where jobs and checkpoints are stored
 
 On first boot the startup script copies the app to `/workspace/VOID-on-Runpod`, downloads:
 
