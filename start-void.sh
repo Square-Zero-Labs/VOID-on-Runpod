@@ -81,11 +81,9 @@ PY
 install_runtime_python_packages() {
     if python_module_available sam2 && sam2_supports_sam21; then
         log "sam2 already importable with SAM 2.1 support"
-    elif ! python_module_available sam2; then
-        log "Installing runtime git-based Python package: sam2 @ ${SAM2_GIT_REF}"
-        python3 -m pip install --no-cache-dir --no-build-isolation "git+https://github.com/facebookresearch/sam2.git@${SAM2_GIT_REF}"
     else
-        log "Installed sam2 package does not expose SAM 2.1 configs. This image should ship the pinned SAM 2.1-compatible package already."
+        log "sam2 is missing or does not expose SAM 2.1 configs."
+        log "This image is expected to preinstall facebookresearch/sam2 @ ${SAM2_GIT_REF} with pip install . during docker build."
         log "Expected git ref: ${SAM2_GIT_REF}"
         exit 1
     fi

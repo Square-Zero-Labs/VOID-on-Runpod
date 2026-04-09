@@ -89,7 +89,10 @@ pip install -r requirements.txt
 SAM 2.1 uses the latest code in the same repository and must be installed separately (it is not on PyPI):
 
 ```bash
-pip install git+https://github.com/facebookresearch/sam2.git@aa9b8722d0585b661ded4b3dff1bd103540554ae
+git clone https://github.com/facebookresearch/sam2.git
+cd sam2
+git checkout aa9b8722d0585b661ded4b3dff1bd103540554ae
+SAM2_BUILD_CUDA=0 pip install .
 ```
 
 Then download the SAM 2.1 checkpoint. The pipeline defaults to `sam2.1_hiera_large.pt` one level above this directory:
@@ -106,6 +109,7 @@ bash run_pipeline.sh config_points.json --sam2-checkpoint /path/to/sam2.1_hiera_
 ```
 
 > SAM 2.1 requires the latest `facebookresearch/sam2` code, **Python ≥ 3.10**, and **PyTorch ≥ 2.5.1** with CUDA. See the [official repo](https://github.com/facebookresearch/sam2) for current system requirements.
+> The SAM2 CUDA post-processing extension is optional. This repo defaults it off for image-build stability, so stage 1 runs with `VOID_SAM2_APPLY_POSTPROCESSING=0` unless you explicitly install the extension and opt back in.
 > This repo now assumes a SAM 2.1-only environment. Older `sam2_hiera_*.pt` checkpoints are intentionally rejected instead of silently falling back to legacy configs.
 
 ### 3. Gemini API key

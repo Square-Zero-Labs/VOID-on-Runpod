@@ -10,12 +10,12 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        apache2-utils \
-        ffmpeg \
-        git \
-        git-lfs \
-        nginx \
-        rsync \
+    apache2-utils \
+    ffmpeg \
+    git \
+    git-lfs \
+    nginx \
+    rsync \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -27,6 +27,16 @@ COPY runtime-requirements.txt /tmp/runtime-requirements.txt
 RUN python3 -m pip install --upgrade pip wheel setuptools && \
     python3 -m pip install --no-cache-dir -r /tmp/runtime-requirements.txt && \
     rm -rf /root/.cache/pip
+
+RUN mkdir -p /opt/sam2 && \
+    cd /opt/sam2 && \
+    git init && \
+    git remote add origin https://github.com/facebookresearch/sam2.git && \
+    git fetch --depth 1 origin aa9b8722d0585b661ded4b3dff1bd103540554ae && \
+    git checkout FETCH_HEAD && \
+    SAM2_BUILD_CUDA=0 python3 -m pip install --no-cache-dir --no-build-isolation . && \
+    cd /opt && \
+    rm -rf /opt/sam2 /root/.cache/pip
 
 COPY . /opt/void_template
 

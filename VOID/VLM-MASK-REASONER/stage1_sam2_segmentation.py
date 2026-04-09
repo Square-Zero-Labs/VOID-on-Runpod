@@ -36,7 +36,8 @@ try:
 except ImportError:
     SAM2_AVAILABLE = False
     print("⚠️  SAM2 not installed. Install with:")
-    print("   pip install git+https://github.com/facebookresearch/sam2.git@aa9b8722d0585b661ded4b3dff1bd103540554ae")
+    print("   git clone https://github.com/facebookresearch/sam2.git")
+    print("   cd sam2 && git checkout aa9b8722d0585b661ded4b3dff1bd103540554ae && pip install .")
     sys.exit(1)
 
 
@@ -47,9 +48,18 @@ class SAM2PointSegmenter:
         print(f"   Loading SAM2 video predictor...")
         self.device = device
         self.auto_box = os.environ.get("VOID_SAM2_AUTO_BOX", "0").lower() not in {"0", "false", "no"}
+        self.apply_postprocessing = (
+            os.environ.get("VOID_SAM2_APPLY_POSTPROCESSING", "0").lower() not in {"0", "false", "no"}
+        )
         self.model_cfg = self._resolve_model_cfg(checkpoint_path, model_cfg)
         print(f"   SAM2 config: {self.model_cfg}")
-        self.predictor = build_sam2_video_predictor(self.model_cfg, checkpoint_path, device=device)
+        print(f"   SAM2 postprocessing: {'enabled' if self.apply_postprocessing else 'disabled'}")
+        self.predictor = build_sam2_video_predictor(
+            self.model_cfg,
+            checkpoint_path,
+            device=device,
+            apply_postprocessing=self.apply_postprocessing,
+        )
         print(f"   ✓ SAM2 loaded on {device}")
 
     @staticmethod
