@@ -20,6 +20,7 @@ This wrapper stays close to the researchers' pipeline, but it intentionally chan
 - `SAM 2.1` only for Stage 1 primary-object segmentation. This repo pins `facebookresearch/sam2` to a SAM 2.1-compatible commit and uses the `sam2.1_hiera_large.pt` checkpoint. Older `sam2_hiera_*.pt` checkpoints are intentionally not supported.
 - Connected affected-region handling in Stage 3a. When Gemini's analysis only identifies affected areas on a few frames, this repo carries those regions across the frames in between so the grey mask stays more continuous and less patchy over time.
 - A small SAM3 runtime wrapper for stability. This repo uses a patched SAM3 processor to avoid dtype and fused-kernel issues that otherwise made grey-mask generation unreliable in our environment.
+- Pass 2 warped-noise temporal alignment. This repo resizes warped noise to the actual loaded clip length in latent space instead of assuming the fixed temporal window size, which avoids tensor-shape mismatches on longer padded clips.
 
 ## Build
 

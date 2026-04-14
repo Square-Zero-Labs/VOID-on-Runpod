@@ -341,7 +341,6 @@ def main():
     # Calculate latent dimensions (same for all videos)
     video_length = int((args.max_video_length - 1) // vae.config.temporal_compression_ratio *
                       vae.config.temporal_compression_ratio) + 1
-    latent_T = (args.temporal_window_size - 1) // 4 + 1
     latent_H = args.height // 8
     latent_W = args.width // 8
     latent_C = 16
@@ -402,9 +401,11 @@ def main():
             logger.info(f"    Prompt: {prompt}")
 
             # Load and resize warped noise
+            actual_latent_T = (input_video.shape[2] - 1) // vae.config.temporal_compression_ratio + 1
+            logger.info(f"    Latent length: {actual_latent_T}")
             warped_noise = load_and_resize_warped_noise(
                 warped_noise_path,
-                (latent_T, latent_H, latent_W, latent_C),
+                (actual_latent_T, latent_H, latent_W, latent_C),
                 device,
                 weight_dtype
             )
