@@ -291,6 +291,123 @@ def masks_from_grid_localizations(
     return masks
 
 
+def grid_box_to_mask(
+    center_row: float,
+    center_col: float,
+    size_rows: int,
+    size_cols: int,
+    grid_rows: int,
+    grid_cols: int,
+    frame_width: int,
+    frame_height: int,
+) -> np.ndarray:
+    """Convert a centered grid-sized box into a full-resolution boolean mask."""
+    mask = np.zeros((frame_height, frame_width), dtype=bool)
+    size_rows = max(1, int(size_rows))
+    size_cols = max(1, int(size_cols))
+
+    top_row = int(round(center_row - (size_rows - 1) / 2.0))
+    left_col = int(round(center_col - (size_cols - 1) / 2.0))
+
+    cell_width = frame_width / max(grid_cols, 1)
+    cell_height = frame_height / max(grid_rows, 1)
+
+    for row in range(top_row, top_row + size_rows):
+        if row < 0 or row >= grid_rows:
+            continue
+        y1 = int(row * cell_height)
+        y2 = int((row + 1) * cell_height)
+
+        for col in range(left_col, left_col + size_cols):
+            if col < 0 or col >= grid_cols:
+                continue
+            x1 = int(col * cell_width)
+            x2 = int((col + 1) * cell_width)
+            mask[y1:y2, x1:x2] = True
+
+    return mask
+
+
+def masks_from_vlm_trajectory(
+    trajectory_path: List[Dict],
+    object_size_grids: Dict[str, int],
+    total_frames: int,
+    grid_rows: int,
+    grid_cols: int,
+    frame_width: int,
+    frame_height: int,
+    first_appears_frame: int = 0,
+) -> List[np.ndarray]:
+    """Expand a VLM trajectory into per-frame grid masks."""
+    masks = [np.zeros((frame_height, frame_width), dtype=bool) for _ in range(total_frames)]
+    if not trajectory_path or total_frames <= 0:
+        return masks
+
+    size_rows = max(1, int(object_size_grids.get("rows", 1)))
+    size_cols = max(1, int(object_size_grids.get("cols", 1)))
+
+    points = []
+    for point in trajectory_path:
+        frame_idx = int(point.get("frame", 0))
+        points.append(
+            (
+                max(0, min(total_frames - 1, frame_idx)),
+                float(point.get("grid_row", 0)),
+                float(point.get("grid_col", 0)),
+            )
+        )
+
+    if not points:
+        return masks
+
+    points.sort(key=lambda item: item[0])
+    start_frame = max(0, min(total_frames - 1, int(first_appears_frame)))
+
+    def set_box(frame_idx: int, row: float, col: float):
+        if 0 <= frame_idx < total_frames:
+            masks[frame_idx] = grid_box_to_mask(
+                row,
+                col,
+                size_rows,
+                size_cols,
+                grid_rows,
+                grid_cols,
+                frame_width,
+                frame_height,
+            )
+
+    first_frame, first_row, first_col = points[0]
+    for frame_idx in range(start_frame, first_frame):
+        set_box(frame_idx, first_row, first_col)
+
+    if len(points) == 1:
+        for frame_idx in range(max(start_frame, first_frame), total_frames):
+            set_box(frame_idx, first_row, first_col)
+        return masks
+
+    for idx in range(len(points) - 1):
+        frame_a, row_a, col_a = points[idx]
+        frame_b, row_b, col_b = points[idx + 1]
+
+        if frame_b <= frame_a:
+            set_box(frame_a, row_a, col_a)
+            continue
+
+        frame_start = max(start_frame, frame_a)
+        frame_stop = min(total_frames, frame_b)
+        for frame_idx in range(frame_start, frame_stop):
+            t = (frame_idx - frame_a) / max(frame_b - frame_a, 1)
+            row = row_a + t * (row_b - row_a)
+            col = col_a + t * (col_b - col_a)
+            set_box(frame_idx, row, col)
+
+    last_frame, last_row, last_col = points[-1]
+    for frame_idx in range(max(start_frame, last_frame), total_frames):
+        set_box(frame_idx, last_row, last_col)
+
+    return masks
+
+
 def get_object_size(mask: np.ndarray) -> Tuple[int, int]:
     """Get bounding box size of object"""
     rows = np.any(mask, axis=1)
@@ -446,6 +563,7 @@ def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
     vlm_analysis_path = output_dir / "vlm_analysis.json"
     black_mask_path = output_dir / "black_mask.mp4"
     input_video_path = output_dir / "input_video.mp4"
+    segmentation_info_path = output_dir / "segmentation_info.json"
 
     if not vlm_analysis_path.exists():
         print(f"   ⚠️  vlm_analysis.json not found")
@@ -462,13 +580,26 @@ def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
     with open(vlm_analysis_path, 'r') as f:
         analysis = json.load(f)
 
-    # Get video properties
-    cap = cv2.VideoCapture(str(input_video_path))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
+    # Prefer Stage 1 metadata because OpenCV frame-count metadata on MP4s can drift.
+    fps = 0.0
+    frame_width = 0
+    frame_height = 0
+    total_frames = 0
+    if segmentation_info_path.exists():
+        with open(segmentation_info_path, "r") as f:
+            segmentation_info = json.load(f)
+        fps = float(segmentation_info.get("fps", 0.0))
+        frame_width = int(segmentation_info.get("frame_width", 0))
+        frame_height = int(segmentation_info.get("frame_height", 0))
+        total_frames = int(segmentation_info.get("total_frames", 0))
+
+    if fps <= 0 or frame_width <= 0 or frame_height <= 0 or total_frames <= 0:
+        cap = cv2.VideoCapture(str(input_video_path))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
 
     # Calculate grid
     min_grid = video_info.get('min_grid', 8)
@@ -552,6 +683,33 @@ def process_video_grey_masks(video_info: Dict, segmenter: SegmentationModel,
                     break
 
         grid_localizations = obj.get("grid_localizations", [])
+        vlm_trajectory = obj.get("trajectory_path", [])
+        object_size_grids = obj.get("object_size_grids", {})
+
+        if not has_trajectory and obj.get("will_move") and vlm_trajectory:
+            obj_masks = masks_from_vlm_trajectory(
+                vlm_trajectory,
+                object_size_grids,
+                total_frames,
+                grid_rows,
+                grid_cols,
+                frame_width,
+                frame_height,
+                first_appears_frame=obj.get("first_appears_frame", 0),
+            )
+            pixel_count = sum(int(mask.sum()) for mask in obj_masks)
+
+            for i in range(len(obj_masks)):
+                if i < len(accumulated_masks):
+                    accumulated_masks[i] |= obj_masks[i]
+
+            print(
+                "         Source: VLM trajectory "
+                f"({len(vlm_trajectory)} keyframes, size={object_size_grids}, "
+                f"pixels={pixel_count} across {len(obj_masks)} frames)"
+            )
+            continue
+
         if not has_trajectory and grid_localizations:
             obj_masks = masks_from_grid_localizations(
                 grid_localizations,
