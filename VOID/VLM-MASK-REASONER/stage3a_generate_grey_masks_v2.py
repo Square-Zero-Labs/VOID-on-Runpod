@@ -303,11 +303,13 @@ def grid_box_to_mask(
 ) -> np.ndarray:
     """Convert a centered grid-sized box into a full-resolution boolean mask."""
     mask = np.zeros((frame_height, frame_width), dtype=bool)
-    size_rows = max(1, int(size_rows))
-    size_cols = max(1, int(size_cols))
+    size_rows = max(1, min(grid_rows, int(size_rows)))
+    size_cols = max(1, min(grid_cols, int(size_cols)))
 
     top_row = int(round(center_row - (size_rows - 1) / 2.0))
     left_col = int(round(center_col - (size_cols - 1) / 2.0))
+    top_row = max(0, min(max(grid_rows - size_rows, 0), top_row))
+    left_col = max(0, min(max(grid_cols - size_cols, 0), left_col))
 
     cell_width = frame_width / max(grid_cols, 1)
     cell_height = frame_height / max(grid_rows, 1)

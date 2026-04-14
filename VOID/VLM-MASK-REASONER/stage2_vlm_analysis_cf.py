@@ -257,6 +257,13 @@ def create_multi_frame_grid_samples(video_path: str, output_dir: Path,
 def make_vlm_analysis_prompt(instruction: str, grid_rows: int, grid_cols: int,
                               has_multi_frame_grids: bool = False) -> str:
     """Create VLM prompt for analyzing video with primary mask"""
+    max_row = max(grid_rows - 1, 0)
+    max_col = max(grid_cols - 1, 0)
+    example_mid_row = min(max_row, max(0, grid_rows // 2))
+    example_bottom_row = max_row
+    example_start_col = min(max_col, 5)
+    example_mid_col = min(max_col, max(0, example_start_col + 1))
+    example_end_col = min(max_col, max(0, example_mid_col + 1))
 
     grid_context = ""
     if has_multi_frame_grids:
@@ -264,6 +271,7 @@ def make_vlm_analysis_prompt(instruction: str, grid_rows: int, grid_cols: int,
 1. **Multiple Grid Reference Frames**: Sampled frames at 0%, 11%, 22%, 33%, 44%, 56%, 67%, 78%, 89%, 100% of video
    - Each frame shows YELLOW GRID with {grid_rows} rows × {grid_cols} columns
    - Grid cells labeled (row, col) starting from (0, 0) at top-left
+   - Valid row indices are 0 through {max_row}; valid column indices are 0 through {max_col}
    - Frame number shown at bottom
    - Use these to locate objects that appear MID-VIDEO and track object positions across time
 2. **First Frame with RED mask**: Shows what will be REMOVED (primary object)
@@ -274,6 +282,7 @@ def make_vlm_analysis_prompt(instruction: str, grid_rows: int, grid_cols: int,
    - The red overlay shows what will be REMOVED (already masked)
    - Yellow grid with {grid_rows} rows × {grid_cols} columns
    - Grid cells are labeled (row, col) starting from (0, 0) at top-left
+   - Valid row indices are 0 through {max_row}; valid column indices are 0 through {max_col}
 2. **Full Video**: Complete scene and action"""
 
     return f"""
@@ -418,12 +427,14 @@ B) PHYSICAL OBJECTS (may move, fall, or stay):
      - IMPORTANT: First keyframe should be at first_appears_frame (not frame 0 if object appears later!)
      - Provide 3-5 keyframes spanning from first appearance to end
      - (grid_row, grid_col) is the CENTER position of object at that frame
+     - Every grid_row MUST be between 0 and {max_row}; every grid_col MUST be between 0 and {max_col}
+     - If the object moves off the edge of the frame, use the nearest edge cell; NEVER output out-of-bounds coordinates
      - Use the yellow grid reference frames to determine positions
      - For objects appearing mid-video: use the grid samples to locate them
      - Example: Object appears at frame 15, falls to bottom
-       [{{"frame": 15, "grid_row": 3, "grid_col": 5}},  ← First appearance
-        {{"frame": 25, "grid_row": 6, "grid_col": 5}},  ← Mid-fall
-        {{"frame": 35, "grid_row": 9, "grid_col": 5}}]  ← On ground
+       [{{"frame": 15, "grid_row": 3, "grid_col": {example_start_col}}},  ← First appearance
+        {{"frame": 25, "grid_row": {example_mid_row}, "grid_col": {example_start_col}}},  ← Mid-fall
+        {{"frame": 35, "grid_row": {example_bottom_row}, "grid_col": {example_start_col}}}]  ← On ground
 
 ✓ Objects held/carried at ANY point in video
 ✓ Objects the primary supports or interacts with
@@ -455,7 +466,7 @@ Example 1: Person holding guitar
       "trajectory_path": [
         {{"frame": 0, "grid_row": 4, "grid_col": 5}},
         {{"frame": 15, "grid_row": 6, "grid_col": 5}},
-        {{"frame": 30, "grid_row": 8, "grid_col": 6}}
+        {{"frame": 30, "grid_row": {example_bottom_row}, "grid_col": {example_end_col}}}
       ]
     }}
   ]
@@ -568,9 +579,9 @@ YOUR OUTPUT FORMAT:
       "movement_description": "Will fall from held position to the ground",
       "object_size_grids": {{"rows": 3, "cols": 2}},
       "trajectory_path": [
-        {{"frame": 0, "grid_row": 3, "grid_col": 6}},
-        {{"frame": 20, "grid_row": 6, "grid_col": 6}},
-        {{"frame": 40, "grid_row": 9, "grid_col": 7}}
+        {{"frame": 0, "grid_row": 3, "grid_col": {example_mid_col}}},
+        {{"frame": 20, "grid_row": {example_mid_row}, "grid_col": {example_mid_col}}},
+        {{"frame": 40, "grid_row": {example_bottom_row}, "grid_col": {example_end_col}}}
       ]
     }},
     {{
@@ -597,6 +608,7 @@ CRITICAL REMINDERS:
 • For objects on surfaces being acted on (can being crushed, can being opened): will_move=false
 • Grid trajectory: Add +1 cell padding to object size (over-mask is better than under-mask)
 • Grid trajectory: Use the yellow grid overlay to determine (row, col) positions
+• Grid coordinates MUST stay within bounds: rows 0..{max_row}, cols 0..{max_col}
 • Be conservative - when in doubt, DON'T include
 • Output MUST be valid JSON only
 
@@ -639,7 +651,32 @@ def call_vlm_with_images_and_video(client, model: str, image_data_urls: list,
     return resp.choices[0].message.content
 
 
-def parse_vlm_response(raw: str) -> Dict:
+def clamp_grid_coordinate(row: int, col: int, grid_rows: int, grid_cols: int, context: str) -> tuple[int, int]:
+    """Clamp a grid coordinate into the valid row/col range and log if adjusted."""
+    max_row = max(grid_rows - 1, 0)
+    max_col = max(grid_cols - 1, 0)
+    raw_row = int(row)
+    raw_col = int(col)
+    clamped_row = max(0, min(max_row, raw_row))
+    clamped_col = max(0, min(max_col, raw_col))
+    if clamped_row != raw_row or clamped_col != raw_col:
+        print(
+            f"   ⚠️  Clamped {context} from ({raw_row}, {raw_col}) "
+            f"to ({clamped_row}, {clamped_col}) for grid {grid_rows}x{grid_cols}"
+        )
+    return clamped_row, clamped_col
+
+
+def clamp_grid_extent(value: int, max_value: int, context: str) -> int:
+    """Clamp a positive grid extent and log if adjusted."""
+    raw_value = int(value)
+    clamped = max(1, min(max_value, raw_value))
+    if clamped != raw_value:
+        print(f"   ⚠️  Clamped {context} from {raw_value} to {clamped}")
+    return clamped
+
+
+def parse_vlm_response(raw: str, grid_rows: int, grid_cols: int) -> Dict:
     """Parse VLM JSON response"""
     # Strip markdown code blocks
     cleaned = raw.strip()
@@ -698,9 +735,16 @@ def parse_vlm_response(raw: str) -> Dict:
             obj["should_have_stayed"] = bool(item.get("should_have_stayed", False))
         if "original_position_grid" in item:
             orig_grid = item.get("original_position_grid", {})
+            orig_row, orig_col = clamp_grid_coordinate(
+                orig_grid.get("row", 0),
+                orig_grid.get("col", 0),
+                grid_rows,
+                grid_cols,
+                f"{obj['noun']} original_position_grid",
+            )
             obj["original_position_grid"] = {
-                "row": int(orig_grid.get("row", 0)),
-                "col": int(orig_grid.get("col", 0))
+                "row": orig_row,
+                "col": orig_col,
             }
 
         # Parse grid localizations for visual artifacts
@@ -712,9 +756,16 @@ def parse_vlm_response(raw: str) -> Dict:
                     "grid_regions": []
                 }
                 for region in loc.get("grid_regions", []):
+                    row, col = clamp_grid_coordinate(
+                        region.get("row", 0),
+                        region.get("col", 0),
+                        grid_rows,
+                        grid_cols,
+                        f"{obj['noun']} grid_localization",
+                    )
                     frame_loc["grid_regions"].append({
-                        "row": int(region.get("row", 0)),
-                        "col": int(region.get("col", 0))
+                        "row": row,
+                        "col": col,
                     })
                 if frame_loc["grid_regions"]:  # Only add if has regions
                     grid_locs.append(frame_loc)
@@ -725,16 +776,32 @@ def parse_vlm_response(raw: str) -> Dict:
         if obj["will_move"] and "object_size_grids" in item and "trajectory_path" in item:
             size_grids = item.get("object_size_grids", {})
             obj["object_size_grids"] = {
-                "rows": int(size_grids.get("rows", 2)),
-                "cols": int(size_grids.get("cols", 2))
+                "rows": clamp_grid_extent(
+                    size_grids.get("rows", 2),
+                    max(grid_rows, 1),
+                    f"{obj['noun']} object_size_grids.rows",
+                ),
+                "cols": clamp_grid_extent(
+                    size_grids.get("cols", 2),
+                    max(grid_cols, 1),
+                    f"{obj['noun']} object_size_grids.cols",
+                ),
             }
 
             trajectory = []
             for point in item.get("trajectory_path", []):
+                frame_idx = int(point.get("frame", 0))
+                row, col = clamp_grid_coordinate(
+                    point.get("grid_row", 0),
+                    point.get("grid_col", 0),
+                    grid_rows,
+                    grid_cols,
+                    f"{obj['noun']} trajectory point @ frame {frame_idx}",
+                )
                 trajectory.append({
-                    "frame": int(point.get("frame", 0)),
-                    "grid_row": int(point.get("grid_row", 0)),
-                    "grid_col": int(point.get("grid_col", 0))
+                    "frame": frame_idx,
+                    "grid_row": row,
+                    "grid_col": col,
                 })
 
             if trajectory:  # Only add if we have valid trajectory points
@@ -895,7 +962,7 @@ def process_video(video_info: Dict, client, model: str):
 
         # Parse and save results (runs whether first call succeeded or fallback succeeded)
         print(f"   Parsing VLM response...")
-        analysis = parse_vlm_response(raw_response)
+        analysis = parse_vlm_response(raw_response, grid_rows, grid_cols)
 
         # Save results
         output_path = output_dir / "vlm_analysis.json"
