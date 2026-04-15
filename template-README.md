@@ -72,3 +72,4 @@ restart-void
 
 - The [Dockerfile and code](https://github.com/Square-Zero-Labs/VOID-on-Runpod) are public.
 - Upstream VOID repo: https://github.com/Netflix/void-model
+- Tutorial: https://youtu.be/o6k8jby0Bks

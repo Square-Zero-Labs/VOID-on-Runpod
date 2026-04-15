@@ -1,5 +1,9 @@
 # VOID on Runpod
 
+[![Watch the tutorial on YouTube](https://img.youtube.com/vi/o6k8jby0Bks/maxresdefault.jpg)](https://youtu.be/o6k8jby0Bks)
+
+[Watch the tutorial on YouTube](https://youtu.be/o6k8jby0Bks)
+
 This repository wraps the upstream [`VOID`](./VOID) subtree in a Runpod-friendly Gradio app and Docker image.
 
 The app supports:
