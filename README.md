@@ -1,8 +1,29 @@
 # VOID on Runpod
 
-[![Watch the tutorial on YouTube](https://img.youtube.com/vi/o6k8jby0Bks/maxresdefault.jpg)](https://youtu.be/o6k8jby0Bks)
+## Tutorial
 
 [Watch the tutorial on YouTube](https://youtu.be/o6k8jby0Bks)
+
+[![Watch the tutorial on YouTube](https://img.youtube.com/vi/o6k8jby0Bks/maxresdefault.jpg)](https://youtu.be/o6k8jby0Bks)
+
+## Quickstart
+
+1. Get the required credentials:
+   - Gemini API key with billing enabled: https://aistudio.google.com/api-keys
+   - Hugging Face approval for `facebook/sam3`: https://huggingface.co/facebook/sam3
+   - Hugging Face read token: https://huggingface.co/settings/tokens
+2. Launch the Runpod template:
+   - https://console.runpod.io/deploy?template=vaxo7z18kn&ref=k7b1cgii
+3. Configure the pod:
+   - GPU: `A40` or `L40`
+   - Required env vars: `GEMINI_API_KEY` and `HF_TOKEN`
+4. Open the app on port `7862` after startup finishes.
+   - Default username: `admin`
+   - Default password: `void`
+5. In the UI:
+   - Upload a video and follow the steps
+
+## About
 
 This repository wraps the upstream [`VOID`](./VOID) subtree in a Runpod-friendly Gradio app and Docker image.
 
@@ -33,12 +54,6 @@ This wrapper stays close to the researchers' pipeline, but it intentionally chan
 ```bash
 docker build --platform=linux/amd64 -t void-runpod:latest .
 ```
-
-## Setup
-
-- Get a Gemini API Key with billing turned on - https://aistudio.google.com/api-keys
-- Get approval to access the SAM3 model weights on Hugging Face - https://huggingface.co/facebook/sam3
-- Get an access token with read access on Hugging Face - https://huggingface.co/settings/tokens
 
 ## Run Locally
 
